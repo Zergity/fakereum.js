@@ -22,6 +22,8 @@ export interface Env {
   IMPERSONATE?: string
   CORS_ORIGINS?: string
   RATE_LIMIT_RPS?: string
+  /** Comma-separated IPs/CIDRs that bypass the per-IP rate limit. */
+  RATE_LIMIT_EXEMPT?: string
   GENESIS?: string
 }
 
@@ -50,6 +52,8 @@ export interface Config {
   impersonateSeed: Array<[Hex, Hex]>
   corsOrigins: string[]
   rateLimitRps: number
+  /** IPs/CIDRs exempt from rate limiting. */
+  rateLimitExempt: string[]
   genesis: GenesisAlloc | null
   resolved: boolean
 }

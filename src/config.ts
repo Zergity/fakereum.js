@@ -83,6 +83,7 @@ export function loadConfig(env: Env): Config {
     impersonateSeed: parseImpersonateSeed(env.IMPERSONATE),
     corsOrigins: splitCSV(env.CORS_ORIGINS),
     rateLimitRps: Number.isFinite(rps) ? rps : 0,
+    rateLimitExempt: splitCSV(env.RATE_LIMIT_EXEMPT),
     genesis: parseGenesis(env.GENESIS),
     resolved: false,
   }

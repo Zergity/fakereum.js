@@ -107,7 +107,7 @@ export class EvmSandbox {
     this.cfg = loadConfig(env)
     this.upstream = new Upstream(this.cfg.upstreamRpcs)
     this.fetcher = new Fetcher(this.upstream, this.cfg.cacheTtlMs, new Map())
-    this.limiter = RateLimiter.fromConfig(this.cfg.rateLimitRps)
+    this.limiter = RateLimiter.fromConfig(this.cfg.rateLimitRps, this.cfg.rateLimitExempt)
     // Hydrate persisted state before serving any request (re-runs on wake).
     this.ctx.blockConcurrencyWhile(async () => {
       await this.load()

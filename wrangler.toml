@@ -51,8 +51,13 @@ ADMINS = ""
 IMPERSONATE = ""
 # Comma-separated CORS origin allowlist; empty = "*".
 CORS_ORIGINS = ""
-# Per-IP rate limit (req/s); <=0 disables.
-RATE_LIMIT_RPS = "0"
+# Per-IP rate limit (req/s); <=0 disables. (Go burst=100 is auto-derived here as
+# 2*rps=100.)
+RATE_LIMIT_RPS = "50"
+# Comma-separated IPs/CIDRs (v4 or v6) that bypass the rate limit. The per-IP key
+# is CF-Connecting-IP, so loopback/private entries below never match in
+# production — kept for parity with the Go config.
+RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
 # Genesis alloc as inline JSON (geth-style {"alloc":{...}}); "" = none.
 # To run test/smoke-tx.mjs, seed the anvil account (note code:"0x" forces a
 # code-less EOA, overriding any live mainnet 7702-delegation bleed-through):
