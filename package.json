@@ -1,0 +1,35 @@
+{
+  "name": "fakereum-worker",
+  "version": "0.1.0",
+  "description": "Fakereum — a forked-EVM JSON-RPC sandbox that fronts any EVM RPC, ported to a Cloudflare Worker (free-plan compatible).",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ethereumjs/block": "10.1.2",
+    "@ethereumjs/common": "10.1.2",
+    "@ethereumjs/evm": "10.1.2",
+    "@ethereumjs/statemanager": "10.1.2",
+    "@ethereumjs/tx": "10.1.2",
+    "@ethereumjs/util": "10.1.2",
+    "@ethereumjs/vm": "10.1.2",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0",
+    "viem": "2.52.2"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.6.0",
+    "@cloudflare/workers-types": "^4.20260501.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^4.0.0"
+  }
+}
