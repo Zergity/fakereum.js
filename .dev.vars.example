@@ -1,0 +1,5 @@
+# Copy to .dev.vars for `wrangler dev`. Holds local secrets / overrides.
+# In production set ETHERSCAN_API_KEY via: wrangler secret put ETHERSCAN_API_KEY
+#
+# Comma-separate multiple Etherscan keys to enable round-robin + rate-limit retry.
+ETHERSCAN_API_KEY=
