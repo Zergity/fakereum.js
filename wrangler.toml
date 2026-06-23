@@ -4,7 +4,7 @@
 # to a single SQLite-backed Durable Object per sandbox chain id. The EVM runs
 # *inside* the DO, which gets a 30s CPU budget on every plan (including Free);
 # a plain Worker request on Free is capped at 10ms, far too little for the EVM.
-name = "fakereum"
+name = "fakereum-42161-rpc"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
@@ -25,18 +25,23 @@ new_sqlite_classes = ["EvmSandbox"]
 # Configuration (mirrors the Go fakereum flags/env). Override per-deployment.
 # Secrets (ETHERSCAN_API_KEY) should be set with `wrangler secret put`, NOT here.
 # ---------------------------------------------------------------------------
+# Production deployment: Arbitrum One (upstream chain id 42161). Mirrors
+# .dev.vars. Secrets (ETHERSCAN_API_KEY) are set via `wrangler secret put`.
 [vars]
 # Upstream EVM JSON-RPC endpoint(s), comma-separated for failover. HTTP(S) only
 # in the Worker port (the Go version's WebSocket upstream is replaced by fetch()).
-UPSTREAM_RPC = "https://ethereum-rpc.publicnode.com"
+UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com"
 # Upstream Etherscan v2 API base.
 UPSTREAM_ETHERSCAN = "https://api.etherscan.io/v2/api"
-# Sandbox chain id. 0 = derive as 420<upstreamChainID> (e.g. mainnet 1 -> 4201).
-CHAIN_ID = "0"
+# Sandbox chain id. Set to the REAL Arbitrum One id (42161) so wallets/dapps
+# treat it exactly like Arbitrum (no network switch). Because the ids now match,
+# a sandbox tx is byte-identical to a valid Arbitrum tx — the replay guard below
+# MUST stay on in this mode to stop sandbox txs being replayed onto real Arbitrum.
+CHAIN_ID = "42161"
 # Native currency symbol. "" = "F" + upstream symbol (e.g. FETH).
-SYMBOL = ""
+SYMBOL = "FETH"
 # Network name. "" = "Fake " + upstream chain name.
-NETWORK_NAME = ""
+NETWORK_NAME = "Fake Arbitrum One"
 # eth_call / eth_estimateGas storage strategy: "stateOverride" (default; 1
 # upstream call, Free-safe) or "getStorageAt" (local EVM, 1 fetch per cold
 # SLOAD -- can exceed the Free 50-subrequest cap on heavy calls).
@@ -44,13 +49,23 @@ ETH_CALL_STORAGE_MODE = "stateOverride"
 # Upstream-read cache TTL (seconds).
 CACHE_TTL = "12"
 # Replay guard: "auto" (on iff CHAIN_ID == upstream id), "true", or "false".
-REJECT_UPSTREAM_SIGNERS = "auto"
-# Comma-separated admin addresses; enables EIP-712 impersonation + clearSandbox.
-ADMINS = ""
+# Forced ON: rejects eth_sendRawTransaction from any signer that holds a non-zero
+# native balance on real Arbitrum, because such a tx (same chain id) could be
+# replayed onto the real chain. Only zero-upstream-balance (Fake-token-only)
+# wallets may transact. (With CHAIN_ID==42161, "auto" would also enable it.)
+REJECT_UPSTREAM_SIGNERS = "true"
+# Deployment-specific / personal config — ADMINS, GENESIS, CORS_ORIGINS and the
+# ETHERSCAN_API_KEY secret — is intentionally NOT committed here. It is uploaded
+# as encrypted Secrets at deploy time from the gitignored .prod.vars file via
+#   npm run deploy:secrets        (see .prod.vars.example for the format)
+# Secrets override [vars] and persist across plain `wrangler deploy`. These keys
+# are kept OUT of [vars] on purpose: a committed [vars] entry of the same name
+# would overwrite the Secret on the next plain deploy.
+#   ADMINS         comma-separated admin addrs (EIP-712 impersonation + clear)
+#   GENESIS        inline geth-style {"alloc":{...}} prefund
+#   CORS_ORIGINS   comma-separated origin allowlist; unset/empty = "*"
 # Seed impersonator mappings "B:A,B2:A2" (impersonator:impersonatee).
 IMPERSONATE = ""
-# Comma-separated CORS origin allowlist; empty = "*".
-CORS_ORIGINS = ""
 # Per-IP rate limit (req/s); <=0 disables. (Go burst=100 is auto-derived here as
 # 2*rps=100.)
 RATE_LIMIT_RPS = "50"
@@ -58,8 +73,5 @@ RATE_LIMIT_RPS = "50"
 # is CF-Connecting-IP, so loopback/private entries below never match in
 # production — kept for parity with the Go config.
 RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
-# Genesis alloc as inline JSON (geth-style {"alloc":{...}}); "" = none.
-# To run test/smoke-tx.mjs, seed the anvil account (note code:"0x" forces a
-# code-less EOA, overriding any live mainnet 7702-delegation bleed-through):
-#   '{"alloc":{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266":{"balance":"0x56bc75e2d63100000","nonce":"0x0","code":"0x"}}}'
-GENESIS = ""
+# GENESIS (inline geth-style {"alloc":{...}} prefund) is a deploy-time Secret —
+# see the note in the ADMINS block above; unset here = no prefund.

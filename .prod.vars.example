@@ -1,0 +1,23 @@
+# Production secret overrides. Copy to `.prod.vars` (gitignored) and fill in
+# real values, then deploy with:  npm run deploy:secrets
+#
+# `wrangler deploy --secrets-file .prod.vars` uploads each KEY=value below as an
+# encrypted Worker Secret (NOT a plaintext var), in the same step as the code.
+# Secrets override wrangler.toml [vars] of the same name and persist across plain
+# `wrangler deploy` runs. Keep these keys OUT of wrangler.toml [vars] — a
+# committed [vars] entry of the same name would clobber the Secret on next deploy.
+#
+# .env / dotenv format (same as .dev.vars). Values are taken literally; the
+# GENESIS JSON does not need outer quotes.
+
+# Admin addresses (EIP-712 impersonation + clearSandbox). Example: hardhat acct #0.
+ADMINS=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+
+# Genesis prefund. Example: 1,000,000 FETH to hardhat acct #0 (code:"0x" = EOA).
+GENESIS={"alloc":{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266":{"balance":"0xd3c21bcecceda1000000","nonce":"0x0","code":"0x"}}}
+
+# CORS origin allowlist (comma-separated). Empty/unset = "*".
+CORS_ORIGINS=
+
+# Etherscan v2 API key(s), comma-separated for round-robin rotation.
+ETHERSCAN_API_KEY=
