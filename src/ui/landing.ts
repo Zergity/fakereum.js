@@ -9,6 +9,7 @@
 
 import type { Config } from '../types'
 import { esc } from './html'
+import { INFOS_SENTINEL } from '../infos'
 
 export interface RenderLandingOpts {
   cfg: Config
@@ -16,6 +17,8 @@ export interface RenderLandingOpts {
   upstreamName: string
   upstreamId: bigint
   upstreamError?: string
+  /** Effective replay-guard verdict (see rejectUpstreamSignersEnabled). */
+  replayGuard: boolean
 }
 
 /** Encode a string as the contents of a double-quoted JS string literal. */
@@ -35,10 +38,10 @@ function jsString(s: string): string {
       case '\r':
         out += '\\r'
         break
-      case ' ':
+      case '':
         out += '\\u2028'
         break
-      case ' ':
+      case '':
         out += '\\u2029'
         break
       // Defensively escape characters that could prematurely close the
@@ -60,7 +63,7 @@ function jsString(s: string): string {
 }
 
 export function renderLanding(opts: RenderLandingOpts): string {
-  const { cfg, upstreams, upstreamName, upstreamId, upstreamError } = opts
+  const { cfg, upstreams, upstreamName, upstreamId, upstreamError, replayGuard } = opts
 
   const chainIdDec = cfg.chainId.toString()
   const chainIdHex = '0x' + cfg.chainId.toString(16)
@@ -81,6 +84,14 @@ export function renderLanding(opts: RenderLandingOpts): string {
 
   const upstreamErrorRow = upstreamError
     ? `<dt>Status</dt><dd class="err">${esc(upstreamError)}</dd>`
+    : ''
+
+  // Only rendered when anti-replay protection is active (REJECT_UPSTREAM_SIGNERS
+  // true, or auto with sandbox id == upstream id). Mirrors the executor guard.
+  const replayGuardSection = replayGuard
+    ? `
+  <div class="tag" style="margin-top:2rem">replay guard</div>
+  <p style="color:#7d8590">Anti-replay protection is <span class="ok">on</span>. A transaction whose signer already holds a native balance on <code>${esc(upstreamName)}</code> is refused — this sandbox shares that chain's ID, so such a signed tx could be replayed onto the real chain. Sign from a wallet funded only with ${esc(symbol)} (zero upstream balance).</p>`
     : ''
 
   return `<!doctype html>
@@ -105,6 +116,8 @@ export function renderLanding(opts: RenderLandingOpts): string {
   .err { color:#f85149; }
   .ok { color:#3fb950; }
   code { background:#161b22; padding:.1em .3em; border-radius:3px; }
+  pre { background:#161b22; padding:.75rem 1rem; border-radius:6px; overflow-x:auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color:#e6edf3; margin:.75rem 0 0; }
+  pre code { background:none; padding:0; }
   ul.explore { list-style: none; padding: 0; margin: .5rem 0 0; }
   ul.explore li { margin: .3rem 0; }
   ul.explore a { text-decoration: none; color:#58a6ff; }
@@ -120,7 +133,7 @@ export function renderLanding(opts: RenderLandingOpts): string {
     <dt>Network name</dt>       <dd>${esc(networkName)}</dd>
     <dt>Chain ID</dt>           <dd>${esc(chainIdDec)} <span style="color:#7d8590">(${esc(chainIdHex)})</span></dd>
     <dt>RPC endpoint</dt>       <dd id="rpc">…</dd>
-    <dt>API endpoint</dt>       <dd id="api">…</dd>
+    <dt>Etherscan API</dt>      <dd id="api">…</dd>
     <dt>Currency</dt>           <dd>${esc(symbol)}</dd>
   </dl>
 
@@ -130,7 +143,7 @@ export function renderLanding(opts: RenderLandingOpts): string {
     <dt>RPC</dt>                <dd>${upstreamRpcRows}</dd>
     ${upstreamErrorRow}
   </dl>
-
+${replayGuardSection}
   <div class="row">
     <button id="add">Add to wallet</button>
     <span id="status"></span>
@@ -143,6 +156,26 @@ export function renderLanding(opts: RenderLandingOpts): string {
     <li><a href="/admin">Admin &rarr;</a></li>
     <li><a href="https://github.com/Zergity/fakereum" target="_blank" rel="noopener noreferrer">Source on GitHub &nearr;</a></li>
   </ul>
+
+  <div class="tag" style="margin-top:2rem">etherscan api</div>
+  <p style="color:#7d8590">The <code>/api</code> and <code>/v2/api</code> endpoints are an Etherscan <strong>v2</strong>-compatible proxy — point any Etherscan client at them, no API key required (the proxy injects and rotates its own). Requests forward to <code>${esc(upstreamName)}</code>'s explorer with <code>chainid</code> forced, and <code>logs&amp;action=getLogs</code> responses are merged with this sandbox's logs so your tooling sees local state alongside the real chain. Both paths are also returned by discovery below (<code>etherscanApi</code> / <code>etherscanApiV2</code>).</p>
+
+  <div class="tag" style="margin-top:2rem">discovery</div>
+  <p style="color:#7d8590">Detect this sandbox from a dapp without any custom RPC method. Wallets refuse to forward <code>fakereum_*</code> calls but always relay <code>eth_call</code>, so a call to the sentinel below (calldata ignored — no real chain has code there) returns the sandbox config, ABI-encoded as a single <code>string</code> of JSON:</p>
+  <pre><code>eth_call({ to: "${esc(INFOS_SENTINEL)}" })
+↳ abi-decode the result to a string, then JSON.parse:
+
+{
+  "chainId":          "0x…",      // this sandbox
+  "upstreamChainId":  "0x…",      // forked chain
+  "networkName":      "…",
+  "symbol":           "…",
+  "rpc":              "…/rpc",     // JSON-RPC
+  "etherscanApi":     "…/api",     // Etherscan v2 proxy
+  "etherscanApiV2":   "…/v2/api",  // same proxy, /v2/api path
+  "explorer":         "…",         // this explorer
+  "upstreamExplorer": { "name": "…", "url": "…" }   // optional
+}</code></pre>
 
   <script>
     const chainIdHex = "${jsString(chainIdHex)}";

@@ -8,7 +8,7 @@
 // the explorer/admin/landing UIs, undo/clear, and ws_server.go subscriptions.
 
 import type { Config, Env, StoredTx } from '../types'
-import { loadConfig, resolveConfig } from '../config'
+import { loadConfig, resolveConfig, rejectUpstreamSignersEnabled } from '../config'
 import {
   ERR_EXECUTION_REVERTED,
   ERR_INTERNAL,
@@ -646,6 +646,7 @@ export class EvmSandbox {
         upstreams: this.cfg.upstreamRpcs,
         upstreamName: chainName(this.cfg.upstreamChainId),
         upstreamId: this.cfg.upstreamChainId,
+        replayGuard: rejectUpstreamSignersEnabled(this.cfg),
       }),
     )
   }
