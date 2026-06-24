@@ -183,6 +183,12 @@ export class EvmSandbox {
     await this.ctx.storage.put('sandbox:meta', this.sandbox.counters())
   }
 
+  /**
+   * Round-robin one of the server's configured Etherscan keys. Reserved for
+   * Worker-internal limited queries (contract ABI / verified-source lookups,
+   * tests) — NOT used by the public /api proxy, which requires and passes
+   * through the caller's own key. Returns undefined when none configured.
+   */
   private nextEtherscanKey(): string | undefined {
     const keys = this.cfg.etherscanKeys
     if (keys.length === 0) return undefined
@@ -570,10 +576,21 @@ export class EvmSandbox {
 
   private async serveEtherscan(request: Request, url: URL): Promise<Response> {
     const params = new URLSearchParams(url.search)
+    // The public proxy requires the CALLER's own Etherscan API key and passes
+    // it straight through. The server's configured key (nextEtherscanKey) is
+    // reserved for Worker-internal limited queries (contract ABI / verified
+    // source, tests) — never injected into proxied traffic.
+    if (!params.get('apikey')) {
+      return jsonResponse({
+        status: '0',
+        message: 'NOTOK',
+        result:
+          'Missing apikey: supply your own Etherscan API key (apikey=…); it is passed through to the upstream explorer',
+      })
+    }
     const swap = (a: Hex): Hex => this.impersonators.swap(a)
     const rewritten = rewriteEtherscanParams(params, {
       upstreamChainId: this.cfg.upstreamChainId,
-      apiKey: this.nextEtherscanKey(),
       swap,
     })
 
@@ -598,7 +615,8 @@ export class EvmSandbox {
       return jsonResponse(this.reverseEtherscanBody(out))
     }
 
-    // Plain passthrough (account/contract/...). chainid + apikey already set.
+    // Plain passthrough (account/contract/...). chainid forced; caller's apikey
+    // carried through unchanged.
     const target = this.cfg.upstreamEtherscan + '?' + rewritten.toString()
     try {
       const r = await fetch(target, { method: request.method })
