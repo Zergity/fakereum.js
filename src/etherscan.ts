@@ -48,25 +48,7 @@ export function completeTopicOperators(params: URLSearchParams): void {
   }
   if (present.length < 2) return
 
-  const parent = new Map<number, number>()
-  for (const p of present) parent.set(p, p)
-  const find = (x: number): number => {
-    const px = parent.get(x)!
-    if (px === x) return x
-    const root = find(px)
-    parent.set(x, root)
-    return root
-  }
-
-  for (let i = 0; i < present.length; i++) {
-    const a = present[i]!
-    for (let j = i + 1; j < present.length; j++) {
-      const b = present[j]!
-      if ((params.get(`topic${a}_${b}_opr`) ?? '').toLowerCase() === 'or') {
-        parent.set(find(a), find(b))
-      }
-    }
-  }
+  const find = orUnionFind(present, params)
 
   for (let i = 0; i < present.length; i++) {
     const a = present[i]!
@@ -77,6 +59,68 @@ export function completeTopicOperators(params: URLSearchParams): void {
       params.set(key, find(a) === find(b) ? 'or' : 'and')
     }
   }
+}
+
+/**
+ * Partition the present topic positions (0..3) into OR-groups by the same
+ * transitive closure completeTopicOperators uses: positions joined by any chain
+ * of topicI_J_opr=or edges share a group; everything else is a singleton. The
+ * sandbox log matcher reads these groups so its filtering honors Etherscan's
+ * cross-position OR — without them it would AND every set position, turning a
+ * 3-topic OR into an (almost always empty) intersection.
+ *
+ * Returns groups as ascending position lists, ordered by first position; empty
+ * when no topic position is present. Mirrors logMatches' "OR within a group,
+ * AND across groups" evaluation. Unlike completeTopicOperators this runs even
+ * for a single present position (it yields one singleton group) so the matcher
+ * has a complete description of which positions to test.
+ */
+export function topicOrGroups(params: URLSearchParams): number[][] {
+  const present: number[] = []
+  for (let i = 0; i < 4; i++) {
+    if (params.get(`topic${i}`)) present.push(i)
+  }
+  if (present.length === 0) return []
+
+  const find = orUnionFind(present, params)
+  const byRoot = new Map<number, number[]>()
+  for (const p of present) {
+    const r = find(p)
+    const g = byRoot.get(r)
+    if (g) g.push(p)
+    else byRoot.set(r, [p])
+  }
+  return [...byRoot.values()]
+    .map((g) => g.slice().sort((a, b) => a - b))
+    .sort((a, b) => a[0]! - b[0]!)
+}
+
+/**
+ * Union-find over the present topic positions, unioning any pair (a,b) whose
+ * topicA_B_opr param is "or". Returns the path-compressing `find` accessor so
+ * callers can either compare roots (completeTopicOperators) or bucket positions
+ * by component (topicOrGroups). Pure; never mutates `params`.
+ */
+function orUnionFind(present: number[], params: URLSearchParams): (x: number) => number {
+  const parent = new Map<number, number>()
+  for (const p of present) parent.set(p, p)
+  const find = (x: number): number => {
+    const px = parent.get(x)!
+    if (px === x) return x
+    const root = find(px)
+    parent.set(x, root)
+    return root
+  }
+  for (let i = 0; i < present.length; i++) {
+    const a = present[i]!
+    for (let j = i + 1; j < present.length; j++) {
+      const b = present[j]!
+      if ((params.get(`topic${a}_${b}_opr`) ?? '').toLowerCase() === 'or') {
+        parent.set(find(a), find(b))
+      }
+    }
+  }
+  return find
 }
 
 // --------------------------------------------------------------------------

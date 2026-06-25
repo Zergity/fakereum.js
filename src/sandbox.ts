@@ -12,6 +12,14 @@ export interface LogFilter {
   blockHash: Hex | null
   addresses: string[] // addrKeys
   topics: Array<Hex[] | null> // per-position OR-set; null = wildcard
+  /**
+   * Optional Etherscan cross-position OR grouping (topicI_J_opr=or). Each group
+   * lists topic positions OR'd together; a log matches when EVERY group has at
+   * least one member position matching, and the groups are AND'd with each other.
+   * Set only on the Etherscan getLogs path; when undefined the standard
+   * eth_getLogs per-position AND applies.
+   */
+  topicGroups?: number[][]
 }
 
 export class Sandbox {
@@ -163,14 +171,32 @@ export function logMatches(f: LogFilter, l: StoredLog): boolean {
   if (f.addresses.length > 0) {
     if (!f.addresses.includes(addrKey(l.address))) return false
   }
+  if (f.topicGroups && f.topicGroups.length > 0) {
+    // Etherscan topicI_J_opr semantics: OR within a group, AND across groups.
+    // A group matches when ANY of its positions equals its filter value, so a
+    // 3-topic OR returns the union of the per-position hits rather than their
+    // (usually empty) intersection.
+    for (const group of f.topicGroups) {
+      if (!group.some((i) => topicPosMatches(f.topics[i] ?? null, l.topics[i]))) return false
+    }
+    return true
+  }
+  // Standard eth_getLogs: every set position must match (AND across positions).
   for (let i = 0; i < f.topics.length; i++) {
-    const want = f.topics[i]
-    if (!want || want.length === 0) continue
-    const have = l.topics[i]
-    if (have === undefined) return false
-    if (!want.some((t) => t.toLowerCase() === have.toLowerCase())) return false
+    if (!topicPosMatches(f.topics[i] ?? null, l.topics[i])) return false
   }
   return true
+}
+
+/**
+ * One topic position. A wildcard (null/empty want-set) matches anything;
+ * otherwise the log must carry a value at this position equal to one of the
+ * wanted values (case-insensitive).
+ */
+function topicPosMatches(want: Hex[] | null, have: Hex | undefined): boolean {
+  if (!want || want.length === 0) return true
+  if (have === undefined) return false
+  return want.some((t) => t.toLowerCase() === have.toLowerCase())
 }
 
 /** Parse eth_getLogs params[0] into a LogFilter. */
@@ -202,6 +228,16 @@ export function parseLogFilter(params: unknown[]): LogFilter {
       else if (Array.isArray(t)) f.topics.push(t.filter((x): x is string => typeof x === 'string') as Hex[])
       else f.topics.push(null)
     }
+  }
+
+  // Etherscan cross-position OR grouping (set only by the getLogs proxy path).
+  const groups = o['topicGroups']
+  if (Array.isArray(groups)) {
+    const parsed = groups
+      .filter((g): g is unknown[] => Array.isArray(g))
+      .map((g) => g.filter((n): n is number => typeof n === 'number'))
+      .filter((g) => g.length > 0)
+    if (parsed.length > 0) f.topicGroups = parsed
   }
   return f
 }

@@ -64,6 +64,7 @@ import {
   mergeGetLogsResult,
   rewriteEtherscanParams,
   toEtherscanLog,
+  topicOrGroups,
 } from '../etherscan'
 import { decodeCalldata, decodeEventLog } from '../ui/decode'
 import { htmlResponse } from '../ui/html'
@@ -934,6 +935,12 @@ function etherscanFilterObj(params: URLSearchParams): Record<string, unknown> {
     const t = params.get('topic' + i)
     topics.push(t ?? null)
   }
-  if (topics.some((t) => t !== null)) obj['topics'] = topics
+  if (topics.some((t) => t !== null)) {
+    obj['topics'] = topics
+    // Carry the topicI_J_opr=or grouping so the sandbox matcher ORs across
+    // positions instead of ANDing them (the upstream request gets the same
+    // grouping via completeTopicOperators).
+    obj['topicGroups'] = topicOrGroups(params)
+  }
   return obj
 }
