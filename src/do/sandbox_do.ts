@@ -606,9 +606,17 @@ export class EvmSandbox {
         return new Response('upstream: ' + String(e), { status: 502 })
       }
       const filter = parseLogFilter([etherscanFilterObj(params)])
-      const sandboxRecords = this.sandbox
-        .filterLogs(filter)
-        .map((l) => toEtherscanLog(this.reverseEtherscanLog(l)))
+      const sandboxRecords = this.sandbox.filterLogs(filter).map((l) => {
+        // The real block timeStamp lives on the owning sandbox tx (blockTime),
+        // not on the StoredLog; recover it by transactionHash so the getLogs
+        // record carries the true block time instead of the 0x0 placeholder.
+        // Deriving at render time means every already-stored log benefits — no
+        // re-execution or migration.
+        const tx = this.sandbox.get(l.transactionHash)
+        return toEtherscanLog(this.reverseEtherscanLog(l), {
+          timeStamp: tx?.blockTime,
+        })
+      })
       const out = mergeGetLogsResult(upstreamJson, sandboxRecords, {
         fromBlock: filter.fromBlock,
         toBlock: filter.toBlock,
