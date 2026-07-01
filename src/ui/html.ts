@@ -13,6 +13,20 @@ export function esc(s: unknown): string {
     .replace(/'/g, '&#39;')
 }
 
+/**
+ * Human label for a contract-deploy mechanism, shown in the explorer. Only two
+ * labels: a top-level (zero-`to` tx) deploy and the CREATE opcode are both plain
+ * CREATE; CREATE2 is the salted variant.
+ */
+export function deployLabel(method: 'tx' | 'create' | 'create2' | undefined): string {
+  return method === 'create2' ? 'CREATE2' : 'CREATE'
+}
+
+/** A `.pill.deploy` badge naming the deploy mechanism (already HTML-safe). */
+export function deployPill(method: 'tx' | 'create' | 'create2' | undefined): string {
+  return `<span class="pill deploy">${esc(deployLabel(method))}</span>`
+}
+
 /** Build a complete HTML Response with the no-store-friendly content type. */
 export function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
@@ -55,6 +69,7 @@ export const explorerCSS = `
   .pill { display:inline-block; padding:.1em .55em; border-radius:999px; font-size:.75rem; border:1px solid #30363d; color:#7d8590; margin-left:.4em; vertical-align:middle; }
   .pill.sandbox { color:#d2a8ff; border-color:#6e40c9; }
   .pill.err { color:#f85149; border-color:#f85149; }
+  .pill.deploy { color:#7ee787; border-color:#238636; }
   .diffpre  { color:#f85149; }
   .diffpost { color:#3fb950; }
   table.slots { width:100%; border-collapse:collapse; margin:.25rem 0; font-size:.82rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

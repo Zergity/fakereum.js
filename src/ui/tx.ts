@@ -9,9 +9,10 @@
 // auto-escaping and is REQUIRED here for correctness/safety — esc() wraps every
 // interpolated value.
 
-import type { Config, DecodedCall, DecodedLogEntry, StoredTx, StoredLog, AccountDiff } from '../types'
-import { esc, explorerCSS } from './html'
-import { checksumAddress, toBigInt, strip0x } from '../lib/hex'
+import type { Config, DecodedCall, DecodedLogEntry, DeployMethod, StoredTx, StoredLog, AccountDiff } from '../types'
+import { deployPill, esc, explorerCSS } from './html'
+import { addrKey, checksumAddress, toBigInt, strip0x } from '../lib/hex'
+import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
 
 export interface RenderTxPageOpts {
@@ -40,6 +41,8 @@ interface TxDiffRow {
   address: string
   addressURL: string
   created: boolean
+  /** Deploy mechanism when `created`; undefined for old txs / non-deploys. */
+  deployMethod?: DeployMethod
   selfDestructed: boolean
   balance: PrePost | null
   nonce: PrePost | null
@@ -77,10 +80,16 @@ function renderTxDiff(tx: StoredTx): TxDiffRow[] {
 
   const rows: TxDiffRow[] = []
   for (const { addr, ad } of entries) {
+    const created = !ad.preExists && ad.postExists
+    // A code deploy: empty code -> non-empty code (matches deriveCreatedContracts).
+    // Gate the deploy badge on this, not on `created`, so CREATE2 into a
+    // pre-funded address is still labelled and a plain new EOA is not.
+    const isDeploy = ad.codeChanged && !!ad.postCode && ad.postCode !== '0x' && (!ad.preCode || ad.preCode === '0x')
     const row: TxDiffRow = {
       address: addr,
       addressURL: '/address/' + addr,
-      created: !ad.preExists && ad.postExists,
+      created,
+      deployMethod: isDeploy ? resolveDeployMethod(tx, addrKey(addr)) : undefined,
       selfDestructed: ad.selfDestructed,
       balance: null,
       nonce: null,
@@ -174,6 +183,7 @@ ${eventBlock}        <dt>Topics</dt>
 function renderDiffRow(row: TxDiffRow): string {
   const pills =
     (row.created ? '<span class="pill sandbox">created</span>' : '') +
+    (row.deployMethod ? deployPill(row.deployMethod) : '') +
     (row.selfDestructed ? '<span class="pill err">self-destructed</span>' : '')
 
   let balance = ''
@@ -264,9 +274,10 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   if (tx.contractAddress) {
     const c = checksumAddress(tx.contractAddress)
     const cURL = '/address/' + c
+    const method = resolveDeployMethod(tx, addrKey(tx.contractAddress))
     contractBlock = `    <dt>Contract created</dt><dd><a href="${esc(cURL)}" rel="noopener noreferrer">${esc(
       c,
-    )}</a></dd>\n`
+    )}</a>${deployPill(method)}</dd>\n`
   }
 
   // CreatedContracts is the full deploy set (top-level + internal). Skip the one
@@ -274,11 +285,14 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   const topLevel = tx.contractAddress ? strip0x(tx.contractAddress).toLowerCase() : null
   const internal = tx.createdContracts
     .filter((a) => topLevel === null || strip0x(a).toLowerCase() !== topLevel)
-    .map((a) => checksumAddress(a))
+    .map((a) => ({ addr: checksumAddress(a), method: resolveDeployMethod(tx, addrKey(a)) }))
   let createdBlock = ''
   if (internal.length > 0) {
     const links = internal
-      .map((c, i) => `${i ? '<br>' : ''}<a href="${esc('/address/' + c)}" rel="noopener noreferrer">${esc(c)}</a>`)
+      .map(
+        ({ addr, method }, i) =>
+          `${i ? '<br>' : ''}<a href="${esc('/address/' + addr)}" rel="noopener noreferrer">${esc(addr)}</a>${deployPill(method)}`,
+      )
       .join('')
     createdBlock = `    <dt>Internal deploys</dt><dd>${links}</dd>\n`
   }

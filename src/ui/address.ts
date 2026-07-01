@@ -8,10 +8,11 @@
 
 import type { Config, OverlayAccount, StoredTx } from '../types'
 import type { Hex } from '../lib/hex'
-import { addrEq, checksumAddress, toBigInt } from '../lib/hex'
+import { addrEq, addrKey, checksumAddress, toBigInt } from '../lib/hex'
+import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
 import { chainName } from '../lib/chains'
-import { esc, explorerCSS } from './html'
+import { deployLabel, esc, explorerCSS } from './html'
 
 export interface RenderAddressOptions {
   address: Hex
@@ -85,9 +86,12 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
   const txRows: TxRow[] = []
   for (const tx of txs) {
     const statusOK = tx.status === 1
+    // "creator" here means this address WAS created by the tx; annotate with the
+    // deploy mechanism (CREATE / CREATE2).
+    const creatorRole = () => `creator (${deployLabel(resolveDeployMethod(tx, addrKey(address)))})`
     let role = ''
     if (tx.contractAddress != null && addrEq(tx.contractAddress, address)) {
-      role = 'creator'
+      role = creatorRole()
     } else if (addrEq(tx.from, address)) {
       role = 'from'
     } else if (tx.to != null && addrEq(tx.to, address)) {
@@ -95,7 +99,7 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
     } else {
       for (const c of tx.createdContracts) {
         if (addrEq(c, address)) {
-          role = 'creator'
+          role = creatorRole()
           break
         }
       }

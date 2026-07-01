@@ -21,7 +21,7 @@ import {
 import { Common, Hardfork, Mainnet, createCustomCommon } from '@ethereumjs/common'
 import { recoverAddress } from 'viem'
 
-import type { Config, StoredLog, StoredTx, TxDiff } from './types'
+import type { Config, DeployMethod, StoredLog, StoredTx, TxDiff } from './types'
 import type { Overlay, WorkingChange } from './overlay'
 import type { Fetcher } from './fetcher'
 import { ForkingStateManager } from './statemanager'
@@ -135,6 +135,11 @@ export class Executor {
       ...(customPrecompiles ? { evmOpts: { customPrecompiles } } : {}),
     })
 
+    // Watch the EVM message stream to record HOW each contract is deployed
+    // (zero-address tx / CREATE / CREATE2). The diff only tells us THAT code
+    // appeared; the opcode is only visible on the live message.
+    const deployVia = captureDeployMethods(vm)
+
     const res = await runTx(vm, {
       tx,
       block: ejBlock,
@@ -158,6 +163,17 @@ export class Executor {
       contractAddress = ejBytesToHex(res.createdAddress.bytes) as Hex
     }
 
+    // Annotate only the contracts that actually landed in the diff (drops any
+    // create that reverted after its address was generated). Keyed by addrKey,
+    // matching diff.accounts / createdContracts keys.
+    let createdVia: Record<string, DeployMethod> | undefined
+    for (const c of createdContracts) {
+      const k = addrKey(c)
+      const method = deployVia.get(k)
+      if (!method) continue
+      ;(createdVia ??= {})[k] = method
+    }
+
     const stored: StoredTx = {
       hash,
       raw: bytesToHex(rawTx),
@@ -174,6 +190,7 @@ export class Executor {
       status,
       contractAddress,
       createdContracts,
+      ...(createdVia ? { createdVia } : {}),
       logs,
       blockNumber: toQuantity(block.number),
       blockHash: block.hash,
@@ -327,6 +344,42 @@ const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 function txMaxFee(tx: { type: number; maxFeePerGas?: bigint; gasPrice?: bigint }): bigint | null {
   if (tx.type <= 1) return tx.gasPrice ?? null // legacy / 2930
   return (tx as { maxFeePerGas?: bigint }).maxFeePerGas ?? null // 1559 / 4844 / 7702
+}
+
+/**
+ * Classify a contract-creation message. Called at `beforeMessage`, where a
+ * create has no `to` yet and `salt` is set only for the CREATE2 opcode; depth 0
+ * is the top-level (zero-`to`) transaction, which is always a plain CREATE.
+ */
+export function classifyDeploy(depth: number, hasSalt: boolean): DeployMethod {
+  if (hasSalt) return 'create2'
+  return depth === 0 ? 'tx' : 'create'
+}
+
+/**
+ * Attach listeners to the EVM message stream and return a map (addrKey ->
+ * method) of every contract created during the run. `beforeMessage` fires for a
+ * create with `message.to` still undefined (and `salt` present only for
+ * CREATE2); the very next `newContract` event carries the generated address —
+ * no other create can interleave between the two, so a single "pending" slot
+ * correlates them safely.
+ */
+export function captureDeployMethods(vm: VM): Map<string, DeployMethod> {
+  const out = new Map<string, DeployMethod>()
+  const events = vm.evm.events
+  if (!events) return out
+
+  let pending: DeployMethod | null = null
+  events.on('beforeMessage', (msg) => {
+    // A create message has no recipient yet; a call always has `to` set.
+    pending = msg.to === undefined || msg.to === null ? classifyDeploy(msg.depth, msg.salt !== undefined) : null
+  })
+  events.on('newContract', (data) => {
+    if (pending === null) return
+    out.set(ejBytesToHex(data.address.bytes).toLowerCase(), pending)
+    pending = null
+  })
+  return out
 }
 
 function deriveCreatedContracts(diff: TxDiff): Hex[] {

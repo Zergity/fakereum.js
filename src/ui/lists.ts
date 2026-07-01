@@ -5,10 +5,11 @@
 // data value. CSS is the shared explorerCSS plus the page-local listCSS below
 // (verbatim from lists.go's listCSS constant).
 
-import type { Config, OverlayAccount, StoredTx } from '../types'
-import { type Hex, checksumAddress, strip0x, toBigInt } from '../lib/hex'
+import type { Config, DeployMethod, OverlayAccount, StoredTx } from '../types'
+import { type Hex, addrKey, checksumAddress, strip0x, toBigInt } from '../lib/hex'
+import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
-import { esc, explorerCSS } from './html'
+import { deployLabel, esc, explorerCSS } from './html'
 
 // Page-local CSS — verbatim from lists.go's listCSS constant.
 const listCSS = `
@@ -61,6 +62,34 @@ function slicePrefix(s: string, n: number): string {
   return s.slice(0, n) + '…'
 }
 
+// Compact deploy badges for a tx row: one pill per top-level deploy plus one per
+// distinct internal-deploy method, each with a count when >1 (e.g. "CREATE2 ×2").
+// Returns "" when the tx deploys nothing. `esc` is applied to every label; the
+// pill markup itself is static.
+function deployPillsForList(tx: StoredTx): string {
+  let out = ''
+  if (tx.contractAddress != null) {
+    const method = resolveDeployMethod(tx, addrKey(tx.contractAddress))
+    out += `<span class="pill deploy">${esc(deployLabel(method))}</span>`
+  }
+
+  // Internal (factory/CREATE2) deploys = createdContracts minus the top-level.
+  const topLevel = tx.contractAddress ? strip0x(tx.contractAddress).toLowerCase() : null
+  const counts = new Map<DeployMethod, number>()
+  for (const c of tx.createdContracts) {
+    if (topLevel !== null && strip0x(c).toLowerCase() === topLevel) continue
+    const m = resolveDeployMethod(tx, addrKey(c))
+    counts.set(m, (counts.get(m) ?? 0) + 1)
+  }
+  // Stable order: CREATE2 first (the point of interest), then the CREATE forms.
+  for (const m of ['create2', 'create', 'tx'] as const) {
+    const n = counts.get(m)
+    if (!n) continue
+    out += `<span class="pill deploy">${esc(deployLabel(m))}${n > 1 ? esc(` ×${n}`) : ''}</span>`
+  }
+  return out
+}
+
 const docHead = (title: string): string =>
   `<!doctype html>
 <html lang="en">
@@ -92,7 +121,7 @@ interface TxListRow {
   fromURL: string
   to: string // "" when none
   toURL: string
-  toLabel: string // "created" for contract-creation
+  deployHTML: string // deploy badges (zero-address tx / CREATE / CREATE2); "" when none
   status: string
   statusOK: boolean
   reason: string // decoded revert reason (Error/Panic); custom errors on detail page
@@ -113,12 +142,10 @@ export function renderTxList(opts: RenderTxListOpts): string {
 
     let to = ''
     let toURL = ''
-    let toLabel = ''
     if (e.contractAddress != null) {
       const ca = checksumAddress(e.contractAddress)
       to = ca
       toURL = '/address/' + ca
-      toLabel = 'created'
     } else if (e.to != null) {
       const t = checksumAddress(e.to)
       to = t
@@ -149,7 +176,7 @@ export function renderTxList(opts: RenderTxListOpts): string {
       fromURL: '/address/' + from,
       to,
       toURL,
-      toLabel,
+      deployHTML: deployPillsForList(e),
       status,
       statusOK,
       reason,
@@ -181,8 +208,8 @@ export function renderTxList(opts: RenderTxListOpts): string {
         : `<td${r.timeAbs ? ` title="${esc(r.timeAbs)}"` : ''}><span class="dash">—</span></td>`
       const blockCell = r.block ? `<td>${esc(r.block)}</td>` : `<td><span class="dash">—</span></td>`
       const toCell = r.to
-        ? `<td><a href="${esc(r.toURL)}">${esc(slicePrefix(r.to, 10))}</a>${r.toLabel ? ` <span class="muted">(${esc(r.toLabel)})</span>` : ''}</td>`
-        : `<td><span class="dash">—</span></td>`
+        ? `<td><a href="${esc(r.toURL)}">${esc(slicePrefix(r.to, 10))}</a>${r.deployHTML}</td>`
+        : `<td><span class="dash">—</span>${r.deployHTML}</td>`
       const statusCell = `<td class="${r.statusOK ? 'ok' : 'err'}">${esc(r.status)}${r.reason ? `<span class="reason" title="${esc(r.reason)}">${esc(r.reason)}</span>` : ''}</td>`
       body += `        <tr>
           <td><a href="${esc(r.url)}">${esc(slicePrefix(r.hash, 14))}</a></td>

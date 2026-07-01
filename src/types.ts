@@ -127,6 +127,15 @@ export interface TxDiff {
 // --------------------------------------------------------------------------
 // Sandbox store: txs / receipts / logs that survive restarts.
 // --------------------------------------------------------------------------
+/**
+ * How a contract was deployed within a tx:
+ *   - 'tx':      top-level deploy via a zero-`to` (contract-creation) transaction
+ *                — an EOA CREATE at depth 0 ("zero-address tx").
+ *   - 'create':  internal CREATE opcode (nonce-based address) from a contract.
+ *   - 'create2': internal CREATE2 opcode (salt-based address) from a contract.
+ */
+export type DeployMethod = 'tx' | 'create' | 'create2'
+
 export interface StoredLog {
   address: Hex
   topics: Hex[]
@@ -161,6 +170,13 @@ export interface StoredTx {
   contractAddress: Hex | null
   /** Contracts deployed inside the tx (factory/CREATE2/7702), not just top-level. */
   createdContracts: Hex[]
+  /**
+   * Deploy mechanism per created contract (addrKey -> method), captured from the
+   * EVM message stream. Keyed by lowercased 0x address, index-agnostic. Optional:
+   * absent on txs stored before this field existed; the UI falls back to a
+   * generic "created" label when a method is missing.
+   */
+  createdVia?: Record<string, DeployMethod>
   logs: StoredLog[]
   blockNumber: Hex
   blockHash: Hex
