@@ -365,6 +365,26 @@ export class Overlay {
     return { count, delta }
   }
 
+  /**
+   * Admin override: replace an account's code, leaving balance/nonce/storage
+   * untouched. Works uniformly for upstream contracts (whose real code is
+   * otherwise fetched upstream) and sandbox-deployed contracts (whose code
+   * already lives here) — every code read path consults the overlay first.
+   * Passing empty code makes the address report as codeless; to restore an
+   * upstream contract's original code, clear the account instead.
+   */
+  setCode(addr: Hex, code: Uint8Array): OverlayDelta {
+    const key = addrKey(addr)
+    let a = this.accounts.get(key)
+    if (!a) {
+      a = emptyAccount()
+      this.accounts.set(key, a)
+    }
+    a.code = code
+    a.codeSet = true
+    return { updated: new Set([key]), deleted: new Set() }
+  }
+
   /** Delete every account matching the predicate (clear_sandbox.go). */
   clearAccounts(shouldClear: (addr: Hex) => boolean): OverlayDelta {
     const delta: OverlayDelta = { updated: new Set(), deleted: new Set() }

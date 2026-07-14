@@ -13,11 +13,12 @@ import {
   type RpcRequest,
   type RpcResponse,
 } from '../rpc'
-import { addrEq, toAddress, type Hex } from '../lib/hex'
+import { addrEq, checksumAddress, hexToBytes, toAddress, type Hex } from '../lib/hex'
 import {
   clearSandboxDigest,
   recoverEIP712Signer,
   removeImpersonatorDigest,
+  setCodeDigest,
   setImpersonatorDigest,
 } from '../lib/eip712'
 import type { Impersonators } from './store'
@@ -87,6 +88,47 @@ export async function rpcRemoveImpersonator(
     }
     await persist()
     return makeResult(req.id, true)
+  } catch (e) {
+    return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
+  }
+}
+
+const HEX_BYTES_RE = /^0x([0-9a-fA-F]{2})*$/
+
+/**
+ * Replace an existing contract's bytecode via an overlay code override. The
+ * (account, code) pair is signed EIP-712 and the recovered signer must be a
+ * configured admin. Works for both upstream and sandbox contracts — the
+ * override sits in front of every code read. Injects the mutation via setCodeFn.
+ */
+export async function rpcSetCode(
+  req: RpcRequest,
+  cfg: Config,
+  setCodeFn: (account: Hex, code: Uint8Array) => Promise<void>,
+): Promise<RpcResponse> {
+  if (cfg.admins.length === 0) {
+    return makeError(req.id, ERR_METHOD_NOT_FOUND, 'set code is not enabled (no admins configured)')
+  }
+  const p = firstParam(req)
+  if (
+    !p ||
+    typeof p['account'] !== 'string' ||
+    typeof p['code'] !== 'string' ||
+    typeof p['signature'] !== 'string'
+  ) {
+    return makeError(req.id, ERR_INVALID_PARAMS, 'expected [{account,code,signature}]')
+  }
+  if (!HEX_BYTES_RE.test(p['code'])) {
+    return makeError(req.id, ERR_INVALID_PARAMS, 'code must be 0x-prefixed even-length hex')
+  }
+  const account = toAddress(p['account'])
+  const code = hexToBytes(p['code'])
+  try {
+    const digest = setCodeDigest(cfg.chainId, account, code)
+    const signer = await recoverEIP712Signer(digest, p['signature'] as Hex)
+    if (!isAdmin(cfg, signer)) return makeError(req.id, ERR_SERVER, `signer ${signer} is not an admin`)
+    await setCodeFn(account, code)
+    return makeResult(req.id, { account: checksumAddress(account), codeSize: code.length })
   } catch (e) {
     return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
   }

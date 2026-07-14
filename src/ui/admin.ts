@@ -154,6 +154,23 @@ ${hasAdmins
       </div>
     </div>
 
+    <h2>Replace bytecode</h2>
+    <p class="muted" style="margin:.25rem 0 1rem">
+      Overrides the code at an address with bytecode you supply. Works on any contract — a real one from the upstream chain (the override shadows its on-chain code) or one deployed inside the sandbox. Balance, nonce, and storage are left as-is, so patch a contract in place while keeping its state. Paste <strong>runtime</strong> bytecode (deployed code), not constructor/init code. Leave the box empty (or <code>0x</code>) to strip the code entirely. To put an upstream contract back to its real code, clear that account below.
+    </p>
+    <div class="panel">
+      <div class="form-row">
+        <label for="codeAddr">account</label>
+        <input id="codeAddr" type="text" placeholder="0x… contract address">
+      </div>
+      <label class="field-label" for="codeHex">runtime bytecode</label>
+      <textarea id="codeHex" placeholder="0x60806040… (paste 0x for no code)"></textarea>
+      <div class="actions">
+        <button id="setCode">Sign &amp; replace</button>
+        <span id="codeStatus" class="status"></span>
+      </div>
+    </div>
+
     <h2>Clear sandbox</h2>
     <p class="muted" style="margin:.25rem 0 1rem">
       Discards sandbox state — overlay balances/nonces/code/storage plus the recorded sandbox transactions — so reads fall back through to the upstream chain. Leave both boxes empty to clear <strong>everything</strong>, or scope it by account: an account is cleared when it's allowed by <em>Only these</em> (blank = all) and not listed under <em>Except these</em>. This is an account-level reset, not a per-tx undo, and it can't be undone.
@@ -554,9 +571,69 @@ ${hasAdmins
       }
     }
 
+    // --- Replace bytecode -----------------------------------------------------
+    // Admin-gated like the others: the (account, code) pair is signed EIP-712
+    // over the SetCode type and verified server-side against cfg.Admins. code is
+    // an EIP-712 dynamic bytes value, so the wallet hashes keccak256(code) — the
+    // server rebuilds the same digest from the raw bytes.
+    function setCodeStatus(msg, kind) {
+      const el = $("codeStatus"); if (!el) return;
+      el.textContent = msg || "";
+      el.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function normalizeCode(text) {
+      let c = (text || "").trim().replace(/\\s+/g, "");
+      if (c === "") c = "0x";
+      if (!c.startsWith("0x")) c = "0x" + c;
+      return c;
+    }
+
+    function validBytes(c) { return /^0x([0-9a-fA-F]{2})*$/.test(c); }
+
+    function setCodePayload(account, code) {
+      return {
+        domain: eip712Domain(),
+        types: {
+          EIP712Domain: [
+            {name:"name",    type:"string"},
+            {name:"version", type:"string"},
+            {name:"chainId", type:"uint256"},
+          ],
+          SetCode: [
+            {name:"account", type:"address"},
+            {name:"code",    type:"bytes"},
+          ],
+        },
+        primaryType: "SetCode",
+        message: { account, code },
+      };
+    }
+
+    async function replaceCode() {
+      const account = $("codeAddr").value.trim();
+      const code = normalizeCode($("codeHex").value);
+      if (!validAddress(account)) { setCodeStatus("account must be a 0x-prefixed 20-byte address", "err"); return; }
+      if (!validBytes(code)) { setCodeStatus("bytecode must be 0x-prefixed even-length hex", "err"); return; }
+      if (!currentAddr) { setCodeStatus("connect an admin wallet first", "err"); return; }
+      const bytes = (code.length - 2) / 2;
+      const what = bytes === 0 ? "strip code at " + shortAddr(account) : "replace code at " + shortAddr(account) + " (" + bytes + " bytes)";
+      if (!confirm(what.charAt(0).toUpperCase() + what.slice(1) + "?\\n\\nThis overrides the account's bytecode and is not a per-tx undo.")) return;
+      try {
+        setCodeStatus("waiting for wallet signature…");
+        const sig = await signTyped(setCodePayload(account, code));
+        setCodeStatus("submitting…");
+        const r = await rpc("fakereum_setCode", [{account, code, signature: sig}]);
+        setCodeStatus((r.codeSize === 0 ? "stripped code at " : "replaced code at ") + shortAddr(r.account) + " (" + r.codeSize + " bytes)", "ok");
+      } catch (e) {
+        setCodeStatus(e.message || String(e), "err");
+      }
+    }
+
     if (${enabledJs}) {
       $("connect").addEventListener("click", connect);
       $("add").addEventListener("click", addMapping);
+      $("setCode").addEventListener("click", replaceCode);
       $("clear").addEventListener("click", clearSandbox);
       $("clearInclude").addEventListener("input", saveClearInputs);
       $("clearExclude").addEventListener("input", saveClearInputs);

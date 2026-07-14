@@ -49,6 +49,7 @@ import {
   rpcClearSandbox,
   rpcListImpersonators,
   rpcRemoveImpersonator,
+  rpcSetCode,
   rpcSetImpersonator,
   type ClearCounts,
 } from '../impersonate/admin_rpc'
@@ -367,6 +368,8 @@ export class EvmSandbox {
         return rpcSetImpersonator(req, this.cfg, this.impersonators, () => this.persistImpersonators())
       case 'fakereum_removeImpersonator':
         return rpcRemoveImpersonator(req, this.cfg, this.impersonators, () => this.persistImpersonators())
+      case 'fakereum_setCode':
+        return rpcSetCode(req, this.cfg, (account, code) => this.doSetCode(account, code))
       default:
         return null
     }
@@ -555,6 +558,12 @@ export class EvmSandbox {
     this.sandbox.removeTx(tx.hash)
     await this.persistOverlay(delta)
     await this.deleteSandboxTxs([tx.hash])
+  }
+
+  /** Overlay code override for `account`; persisted like any overlay write. */
+  private async doSetCode(account: Hex, code: Uint8Array): Promise<void> {
+    const delta = this.overlay.setCode(account, code)
+    await this.persistOverlay(delta)
   }
 
   private async doClear(include: Hex[], exclude: Hex[]): Promise<ClearCounts> {

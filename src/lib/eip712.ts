@@ -31,6 +31,7 @@ const SET_IMP_TYPE_HASH = keccak256(
 )
 const REMOVE_IMP_TYPE_HASH = keccak256(utf8('RemoveImpersonator(address impersonator)'))
 const CLEAR_TYPE_HASH = keccak256(utf8('ClearSandbox(address[] include,address[] exclude)'))
+const SET_CODE_TYPE_HASH = keccak256(utf8('SetCode(address account,bytes code)'))
 
 /** 32-byte big-endian encoding of a uint256. */
 function uint256To32(n: bigint): Uint8Array {
@@ -83,6 +84,18 @@ export function removeImpersonatorDigest(chainId: bigint, impersonator: Hex): He
 export function clearSandboxDigest(chainId: bigint, include: Hex[], exclude: Hex[]): Hex {
   const structHash = keccak256(
     concatBytes(CLEAR_TYPE_HASH, addressArrayHash(include), addressArrayHash(exclude)),
+  )
+  return digest(chainId, structHash)
+}
+
+/**
+ * Digest for the admin bytecode-replace action. `code` is an EIP-712 dynamic
+ * `bytes`, so it hashes to keccak256(code) — matching what a wallet's
+ * eth_signTypedData_v4 computes for the SetCode(address account,bytes code) type.
+ */
+export function setCodeDigest(chainId: bigint, account: Hex, code: Uint8Array): Hex {
+  const structHash = keccak256(
+    concatBytes(SET_CODE_TYPE_HASH, addressTo32(account), keccak256(code)),
   )
   return digest(chainId, structHash)
 }
