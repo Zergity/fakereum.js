@@ -11,7 +11,7 @@
 // The EIP-712 domain matches the Go server byte-for-byte:
 //   { name: "fakereum-impersonate", version: "1", chainId: <cfg.chainId> }
 // The clearSandbox tool SHARES this domain; its primaryType is
-//   ClearSandbox(address[] include,address[] exclude,bool keepNonzeroNonce)
+//   ClearSandbox(address[] include,address[] exclude,bool keepNonzeroNonce,bool keepBalances)
 // The set/remove types replicate impersonate_rpc.go's canonical encodeType:
 //   SetImpersonator(address impersonator,address impersonatee)
 //   RemoveImpersonator(address impersonator)
@@ -190,7 +190,11 @@ ${hasAdmins
       </div>
       <label class="clear-opt" for="clearKeepNonce">
         <input type="checkbox" id="clearKeepNonce">
-        <span>Keep non-zero account nonce <span class="muted">— any account whose sandbox nonce is above 0 is left untouched, so a wallet that already advanced its nonce here isn't confused by a reset count.</span></span>
+        <span>Keep EOA nonces <span class="muted">— still wipe balance, code, storage and the recorded txs, but preserve the current nonce of any EOA that has sent a sandbox tx, so a wallet that already advanced its nonce here isn't reset back below what it handed out. Contract accounts are always cleared in full.</span></span>
+      </label>
+      <label class="clear-opt" for="clearKeepBalances">
+        <input type="checkbox" id="clearKeepBalances">
+        <span>Keep EOA balances <span class="muted">— leave an in-scope EOA's balance intact while clearing its nonce, code, storage and txs. Contract accounts are always cleared in full, balance included.</span></span>
       </label>
       <div class="actions">
         <button id="clear" class="warn">Sign &amp; clear</button>
@@ -518,6 +522,7 @@ ${hasAdmins
         if (typeof s.include === "string") $("clearInclude").value = s.include;
         if (typeof s.exclude === "string") $("clearExclude").value = s.exclude;
         if (typeof s.keepNonzeroNonce === "boolean") $("clearKeepNonce").checked = s.keepNonzeroNonce;
+        if (typeof s.keepBalances === "boolean") $("clearKeepBalances").checked = s.keepBalances;
       } catch (e) { /* ignore malformed/blocked storage */ }
     }
 
@@ -527,6 +532,7 @@ ${hasAdmins
           include: $("clearInclude").value,
           exclude: $("clearExclude").value,
           keepNonzeroNonce: $("clearKeepNonce").checked,
+          keepBalances: $("clearKeepBalances").checked,
         }));
       } catch (e) { /* ignore quota/blocked storage */ }
     }
@@ -538,7 +544,7 @@ ${hasAdmins
       return { addrs: parts, bad: parts.filter(x => !validAddress(x)) };
     }
 
-    function clearSandboxPayload(include, exclude, keepNonzeroNonce) {
+    function clearSandboxPayload(include, exclude, keepNonzeroNonce, keepBalances) {
       return {
         domain: eip712Domain(),
         types: {
@@ -551,10 +557,11 @@ ${hasAdmins
             {name:"include",          type:"address[]"},
             {name:"exclude",          type:"address[]"},
             {name:"keepNonzeroNonce", type:"bool"},
+            {name:"keepBalances",     type:"bool"},
           ],
         },
         primaryType: "ClearSandbox",
-        message: { include, exclude, keepNonzeroNonce },
+        message: { include, exclude, keepNonzeroNonce, keepBalances },
       };
     }
 
@@ -562,6 +569,7 @@ ${hasAdmins
       const inc = parseAddrList($("clearInclude").value);
       const exc = parseAddrList($("clearExclude").value);
       const keepNonce = $("clearKeepNonce").checked;
+      const keepBal = $("clearKeepBalances").checked;
       const bad = inc.bad.concat(exc.bad);
       if (bad.length) { setClearStatus("invalid address: " + bad.join(", "), "err"); return; }
       if (!currentAddr) { setClearStatus("connect an admin wallet first", "err"); return; }
@@ -569,13 +577,16 @@ ${hasAdmins
         ? inc.addrs.length + " account(s)" + (exc.addrs.length ? " (minus " + exc.addrs.length + ")" : "")
         : exc.addrs.length ? "everything except " + exc.addrs.length + " account(s)"
         : "ALL sandbox state";
-      const nonceNote = keepNonce ? "\\n\\nAccounts with a non-zero nonce are kept." : "";
-      if (!confirm("Clear " + scope + "?\\n\\nThis discards overlay state and sandbox txs, and cannot be undone." + nonceNote)) return;
+      const keeps = [];
+      if (keepNonce) keeps.push("EOA nonces");
+      if (keepBal) keeps.push("EOA balances");
+      const keepNote = keeps.length ? "\\n\\nPreserved: " + keeps.join(" and ") + "." : "";
+      if (!confirm("Clear " + scope + "?\\n\\nThis discards overlay state and sandbox txs, and cannot be undone." + keepNote)) return;
       try {
         setClearStatus("waiting for wallet signature…");
-        const sig = await signTyped(clearSandboxPayload(inc.addrs, exc.addrs, keepNonce));
+        const sig = await signTyped(clearSandboxPayload(inc.addrs, exc.addrs, keepNonce, keepBal));
         setClearStatus("submitting…");
-        const r = await rpc("fakereum_clearSandbox", [{include: inc.addrs, exclude: exc.addrs, keepNonzeroNonce: keepNonce, signature: sig}]);
+        const r = await rpc("fakereum_clearSandbox", [{include: inc.addrs, exclude: exc.addrs, keepNonzeroNonce: keepNonce, keepBalances: keepBal, signature: sig}]);
         setClearStatus("cleared " + r.overlayCleared + " overlay account(s) and " + r.txsCleared + " tx(s)", "ok");
       } catch (e) {
         setClearStatus(e.message || String(e), "err");
@@ -649,6 +660,7 @@ ${hasAdmins
       $("clearInclude").addEventListener("input", saveClearInputs);
       $("clearExclude").addEventListener("input", saveClearInputs);
       $("clearKeepNonce").addEventListener("change", saveClearInputs);
+      $("clearKeepBalances").addEventListener("change", saveClearInputs);
       loadClearInputs();
       // Auto-detect a previously-authorized account without forcing a popup.
       // refresh() is intentionally NOT called here — applyAuth gates it on

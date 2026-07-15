@@ -386,12 +386,62 @@ export class Overlay {
   }
 
   /** Delete every account matching the predicate (clear_sandbox.go). */
-  clearAccounts(shouldClear: (addr: Hex) => boolean): OverlayDelta {
+  /**
+   * Account-level sandbox reset. `inScope` selects which accounts the clear may
+   * touch (the include/exclude filtering lives in the caller). For every
+   * selected account, code and storage are always wiped; balance and nonce
+   * survive only when their keep flag applies:
+   *
+   *  - keepBalances retains the balance, but only for EOAs — a contract is
+   *    always cleared in full (see below), balance included.
+   *  - keepNonce retains a *non-zero* nonce, but only for EOAs. A contract's
+   *    nonce is >= 1 the moment it's deployed (EIP-161) and carries no
+   *    wallet-facing meaning, so code-bearing accounts are cleared outright —
+   *    otherwise every deployed contract would survive a keep-nonce clear. The
+   *    surviving-nonce case is exactly an EOA that has sent a sandbox tx, which
+   *    is why we don't want eth_getTransactionCount to regress under it.
+   *
+   * An account reduced to nothing is deleted; one that keeps a balance or nonce
+   * stays as a slimmed entry. Only accounts that actually changed appear in the
+   * delta, so a no-op keep doesn't force a needless re-persist.
+   */
+  clearAccounts(
+    inScope: (addr: Hex) => boolean,
+    opts: { keepNonce: boolean; keepBalances: boolean },
+  ): OverlayDelta {
     const delta: OverlayDelta = { updated: new Set(), deleted: new Set() }
     for (const key of [...this.accounts.keys()]) {
-      if (shouldClear(checksumAddress(key))) {
+      if (!inScope(checksumAddress(key))) continue
+      const a = this.accounts.get(key)!
+      const isContract = a.codeSet && a.code.length > 0
+      let changed = false
+      if (a.codeSet) {
+        a.codeSet = false
+        a.code = new Uint8Array(0)
+        changed = true
+      }
+      if (a.storage.size > 0) {
+        a.storage.clear()
+        changed = true
+      }
+      const keepThisBalance = opts.keepBalances && !isContract
+      if (a.balanceSet && !keepThisBalance) {
+        a.balanceSet = false
+        a.balance = 0n
+        changed = true
+      }
+      const keepThisNonce = opts.keepNonce && !isContract && a.nonceSet && a.nonce > 0n
+      if (a.nonceSet && !keepThisNonce) {
+        a.nonceSet = false
+        a.nonce = 0n
+        changed = true
+      }
+      if (!changed) continue
+      if (!a.balanceSet && !a.nonceSet && !a.codeSet && a.storage.size === 0) {
         this.accounts.delete(key)
         delta.deleted.add(key)
+      } else {
+        delta.updated.add(key)
       }
     }
     return delta

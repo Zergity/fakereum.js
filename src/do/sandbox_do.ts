@@ -361,7 +361,9 @@ export class EvmSandbox {
       case 'fakereum_undoBackTo':
         return this.rpcUndoBackTo(id, params)
       case 'fakereum_clearSandbox':
-        return rpcClearSandbox(req, this.cfg, (inc, exc, keep) => this.doClear(inc, exc, keep))
+        return rpcClearSandbox(req, this.cfg, (inc, exc, keepNonce, keepBalances) =>
+          this.doClear(inc, exc, keepNonce, keepBalances),
+        )
       case 'fakereum_listImpersonators':
         return rpcListImpersonators(req, this.impersonators)
       case 'fakereum_setImpersonator':
@@ -570,27 +572,33 @@ export class EvmSandbox {
     include: Hex[],
     exclude: Hex[],
     keepNonzeroNonce: boolean,
+    keepBalances: boolean,
   ): Promise<ClearCounts> {
     const inc = new Set(include.map(addrKey))
     const exc = new Set(exclude.map(addrKey))
-    const shouldClear = (addr: Hex): boolean => {
+    // Which accounts the clear is allowed to touch — include/exclude scope only.
+    // What actually survives inside a touched account (balance, EOA nonce) is
+    // decided by the keep flags, handled in overlay.clearAccounts.
+    const inScope = (addr: Hex): boolean => {
       const k = addrKey(addr)
       if (exc.has(k)) return false
       if (inc.size > 0 && !inc.has(k)) return false
-      // Keep any account whose overlay nonce has advanced past 0. Wiping it
-      // would drop eth_getTransactionCount back below what a wallet already
-      // handed out, and the wallet then stalls (or replays) its next tx.
-      if (keepNonzeroNonce) {
-        const ovl = this.overlay.get(k)
-        if (ovl?.nonceSet && ovl.nonce > 0n) return false
-      }
       return true
     }
-    const delta = this.overlay.clearAccounts(shouldClear)
-    const removed = this.sandbox.removeWhere((tx) => shouldClear(tx.from))
+    const delta = this.overlay.clearAccounts(inScope, {
+      keepNonce: keepNonzeroNonce,
+      keepBalances,
+    })
+    // Recorded sandbox txs are part of "everything of those accounts", so an
+    // in-scope sender's txs go regardless of the keep flags — a retained nonce
+    // is just the count for eth_getTransactionCount, decoupled from the history.
+    const removed = this.sandbox.removeWhere((tx) => inScope(tx.from))
     await this.persistOverlay(delta)
     await this.deleteSandboxTxs(removed)
-    return { overlayCleared: delta.deleted.size, txsCleared: removed.length }
+    return {
+      overlayCleared: delta.deleted.size + delta.updated.size,
+      txsCleared: removed.length,
+    }
   }
 
   // --- Etherscan /api -----------------------------------------------------
