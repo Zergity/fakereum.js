@@ -9,6 +9,19 @@ main = "src/index.ts"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Runtime limits. eth_sendRawTransaction runs the tx in the DO's local EVM and
+# lazily forks state from upstream: every cold account costs 3 subrequests
+# (getBalance+getTransactionCount+getCode) and every cold SLOAD costs 1
+# (getStorageAt), all un-batched. A heavy tx blows past the default subrequest
+# cap and fails with "Too many subrequests by single Worker invocation".
+#   - Workers PAID: default 10,000, raise up to 10,000,000 with the key below.
+#   - Workers FREE: hard-capped at 50 external subrequests — this key is ignored
+#     (max is 50). To go higher you MUST be on the Paid plan.
+# Applies to the whole script, DO invocations included. Enforced only when
+# deployed to Cloudflare, not in `wrangler dev`.
+[limits]
+subrequests = 100_000
+
 # One Durable Object class = the stateful sandbox "node".
 [[durable_objects.bindings]]
 name = "EVM_SANDBOX"
