@@ -361,7 +361,7 @@ export class EvmSandbox {
       case 'fakereum_undoBackTo':
         return this.rpcUndoBackTo(id, params)
       case 'fakereum_clearSandbox':
-        return rpcClearSandbox(req, this.cfg, (inc, exc) => this.doClear(inc, exc))
+        return rpcClearSandbox(req, this.cfg, (inc, exc, keep) => this.doClear(inc, exc, keep))
       case 'fakereum_listImpersonators':
         return rpcListImpersonators(req, this.impersonators)
       case 'fakereum_setImpersonator':
@@ -566,13 +566,24 @@ export class EvmSandbox {
     await this.persistOverlay(delta)
   }
 
-  private async doClear(include: Hex[], exclude: Hex[]): Promise<ClearCounts> {
+  private async doClear(
+    include: Hex[],
+    exclude: Hex[],
+    keepNonzeroNonce: boolean,
+  ): Promise<ClearCounts> {
     const inc = new Set(include.map(addrKey))
     const exc = new Set(exclude.map(addrKey))
     const shouldClear = (addr: Hex): boolean => {
       const k = addrKey(addr)
       if (exc.has(k)) return false
-      if (inc.size > 0) return inc.has(k)
+      if (inc.size > 0 && !inc.has(k)) return false
+      // Keep any account whose overlay nonce has advanced past 0. Wiping it
+      // would drop eth_getTransactionCount back below what a wallet already
+      // handed out, and the wallet then stalls (or replays) its next tx.
+      if (keepNonzeroNonce) {
+        const ovl = this.overlay.get(k)
+        if (ovl?.nonceSet && ovl.nonce > 0n) return false
+      }
       return true
     }
     const delta = this.overlay.clearAccounts(shouldClear)

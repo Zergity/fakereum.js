@@ -30,7 +30,9 @@ const SET_IMP_TYPE_HASH = keccak256(
   utf8('SetImpersonator(address impersonator,address impersonatee)'),
 )
 const REMOVE_IMP_TYPE_HASH = keccak256(utf8('RemoveImpersonator(address impersonator)'))
-const CLEAR_TYPE_HASH = keccak256(utf8('ClearSandbox(address[] include,address[] exclude)'))
+const CLEAR_TYPE_HASH = keccak256(
+  utf8('ClearSandbox(address[] include,address[] exclude,bool keepNonzeroNonce)'),
+)
 const SET_CODE_TYPE_HASH = keccak256(utf8('SetCode(address account,bytes code)'))
 
 /** 32-byte big-endian encoding of a uint256. */
@@ -81,9 +83,21 @@ export function removeImpersonatorDigest(chainId: bigint, impersonator: Hex): He
   return digest(chainId, structHash)
 }
 
-export function clearSandboxDigest(chainId: bigint, include: Hex[], exclude: Hex[]): Hex {
+export function clearSandboxDigest(
+  chainId: bigint,
+  include: Hex[],
+  exclude: Hex[],
+  keepNonzeroNonce: boolean,
+): Hex {
+  // A wallet encodes an EIP-712 `bool` as a uint256 (0 or 1) in the last slot,
+  // so we hash the same 32-byte value here.
   const structHash = keccak256(
-    concatBytes(CLEAR_TYPE_HASH, addressArrayHash(include), addressArrayHash(exclude)),
+    concatBytes(
+      CLEAR_TYPE_HASH,
+      addressArrayHash(include),
+      addressArrayHash(exclude),
+      uint256To32(keepNonzeroNonce ? 1n : 0n),
+    ),
   )
   return digest(chainId, structHash)
 }

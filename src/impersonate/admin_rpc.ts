@@ -142,22 +142,25 @@ export interface ClearCounts {
 export async function rpcClearSandbox(
   req: RpcRequest,
   cfg: Config,
-  clearFn: (include: Hex[], exclude: Hex[]) => Promise<ClearCounts>,
+  clearFn: (include: Hex[], exclude: Hex[], keepNonzeroNonce: boolean) => Promise<ClearCounts>,
 ): Promise<RpcResponse> {
   if (cfg.admins.length === 0) {
     return makeError(req.id, ERR_METHOD_NOT_FOUND, 'clear sandbox is not enabled (no admins configured)')
   }
   const p = firstParam(req)
   if (!p || typeof p['signature'] !== 'string') {
-    return makeError(req.id, ERR_INVALID_PARAMS, 'expected [{include?:address[], exclude?:address[], signature}]')
+    return makeError(req.id, ERR_INVALID_PARAMS, 'expected [{include?:address[], exclude?:address[], keepNonzeroNonce?:bool, signature}]')
   }
   const include = toAddrArray(p['include'])
   const exclude = toAddrArray(p['exclude'])
+  // Part of the signed scope: only an exact-true flag counts, so a tampered
+  // request can't silently widen the clear beyond what the admin signed.
+  const keepNonzeroNonce = p['keepNonzeroNonce'] === true
   try {
-    const digest = clearSandboxDigest(cfg.chainId, include, exclude)
+    const digest = clearSandboxDigest(cfg.chainId, include, exclude, keepNonzeroNonce)
     const signer = await recoverEIP712Signer(digest, p['signature'] as Hex)
     if (!isAdmin(cfg, signer)) return makeError(req.id, ERR_SERVER, `signer ${signer} is not an admin`)
-    const counts = await clearFn(include, exclude)
+    const counts = await clearFn(include, exclude, keepNonzeroNonce)
     return makeResult(req.id, counts)
   } catch (e) {
     return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
