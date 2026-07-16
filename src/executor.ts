@@ -12,7 +12,6 @@ import type { CustomPrecompile, PrecompileInput, ExecResult } from '@ethereumjs/
 import { createTxFromRLP } from '@ethereumjs/tx'
 import { createBlock } from '@ethereumjs/block'
 import {
-  Account,
   Address,
   createAddressFromString,
   bytesToHex as ejBytesToHex,
@@ -28,7 +27,7 @@ import { ForkingStateManager } from './statemanager'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
 import { decodeRevertReason } from './ui/decode'
-import { addrKey, bytesToHex, hexToBytes, toBigInt, toQuantity, type Hex } from './lib/hex'
+import { addrKey, bytesToHex, hexToBytes, toQuantity, type Hex } from './lib/hex'
 
 const ECRECOVER_GAS = 3000n
 const ECRECOVER_ADDR = '0x0000000000000000000000000000000000000001'
@@ -118,7 +117,9 @@ export class Executor {
       ;(tx as unknown as { getSenderAddress: () => Address }).getSenderAddress = () => aAddr
     }
 
-    const block = await this.fetcher.getLatestBlock()
+    // Always fetch the live tip (uncached): the executed tx must see the true
+    // current block.number/block.timestamp, not a value cached up to ttlMs ago.
+    const block = await this.fetcher.getLatestBlockUncached()
 
     // baseFee-lowering: if the signed maxFeePerGas is below the upstream
     // baseFee, lower the block baseFee to the cap so the tx still lands.
@@ -234,6 +235,14 @@ export class Executor {
     const isCreate = !args.to
     const gasLimit = args.gas && args.gas > 0n ? args.gas : block.gasLimit
 
+    // Give the call a block context so TIMESTAMP/NUMBER read sensibly instead of
+    // the EVM's default zero-block. block.timestamp uses the current wall clock:
+    // the upstream latest-block time can be stale (cached up to cacheTtlMs) and
+    // callers reading block.timestamp expect "now". Everything else mirrors the
+    // latest block.
+    const nowSec = BigInt(Math.floor(Date.now() / 1000))
+    const ejBlock = this.buildBlock({ ...block, time: nowSec }, block.baseFee)
+
     const res = await evm.runCall({
       caller: args.from ? createAddressFromString(args.from.toLowerCase()) : createAddressFromString(ZERO_ADDR),
       to: args.to ? createAddressFromString(args.to.toLowerCase()) : undefined,
@@ -242,6 +251,7 @@ export class Executor {
       value: args.value ?? 0n,
       gasPrice: 0n,
       skipBalance: true,
+      block: ejBlock,
     })
 
     const out: CallResult = {

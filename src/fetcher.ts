@@ -74,26 +74,35 @@ export class Fetcher {
   }
 
   async getLatestBlock(): Promise<BlockCtx> {
-    const head = (await this.cached('eth_getBlockByNumber', ['latest', false])) as Record<
-      string,
-      JsonValue
-    > | null
-    if (!head || typeof head !== 'object') throw new Error('upstream tip: empty block')
-    const num = asOptString(head['number'])
-    const ts = asOptString(head['timestamp'])
-    const base = asOptString(head['baseFeePerGas'])
-    const gl = asOptString(head['gasLimit'])
-    const diff = asOptString(head['difficulty'])
-    return {
-      number: num ? toBigInt(num) : 0n,
-      time: ts ? toBigInt(ts) : 0n,
-      baseFee: base ? toBigInt(base) : 0n,
-      gasLimit: gl ? toBigInt(gl) : 0n,
-      coinbase: (asOptString(head['miner']) ?? '0x0000000000000000000000000000000000000000') as Hex,
-      difficulty: diff ? toBigInt(diff) : 0n,
-      mixHash: toHash32Hex(asOptString(head['mixHash']) ?? '0x'),
-      hash: (asOptString(head['hash']) ?? toHash32Hex('0x')) as Hex,
-    }
+    return parseTip(await this.cached('eth_getBlockByNumber', ['latest', false]))
+  }
+
+  // Bypass the TTL cache. eth_sendRawTransaction must build on the true current
+  // tip — its block.number/block.timestamp have to be live, not a value cached
+  // up to ttlMs ago. Like getBalanceUncached, this deliberately does not seed
+  // the shared cache.
+  async getLatestBlockUncached(): Promise<BlockCtx> {
+    return parseTip(await this.up.callResult('eth_getBlockByNumber', ['latest', false]))
+  }
+}
+
+function parseTip(head: JsonValue): BlockCtx {
+  const h = head as Record<string, JsonValue> | null
+  if (!h || typeof h !== 'object') throw new Error('upstream tip: empty block')
+  const num = asOptString(h['number'])
+  const ts = asOptString(h['timestamp'])
+  const base = asOptString(h['baseFeePerGas'])
+  const gl = asOptString(h['gasLimit'])
+  const diff = asOptString(h['difficulty'])
+  return {
+    number: num ? toBigInt(num) : 0n,
+    time: ts ? toBigInt(ts) : 0n,
+    baseFee: base ? toBigInt(base) : 0n,
+    gasLimit: gl ? toBigInt(gl) : 0n,
+    coinbase: (asOptString(h['miner']) ?? '0x0000000000000000000000000000000000000000') as Hex,
+    difficulty: diff ? toBigInt(diff) : 0n,
+    mixHash: toHash32Hex(asOptString(h['mixHash']) ?? '0x'),
+    hash: (asOptString(h['hash']) ?? toHash32Hex('0x')) as Hex,
   }
 }
 
