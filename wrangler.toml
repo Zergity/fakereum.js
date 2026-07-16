@@ -19,8 +19,14 @@ compatibility_flags = ["nodejs_compat"]
 #     (max is 50). To go higher you MUST be on the Paid plan.
 # Applies to the whole script, DO invocations included. Enforced only when
 # deployed to Cloudflare, not in `wrangler dev`.
-[limits]
-subrequests = 100_000
+#
+# DISABLED: [limits] is a Paid-plan feature. This account is on the Free plan,
+# where the deploy is rejected ("CPU limits are not supported for the Free
+# plan") and external subrequests are hard-capped at 50 regardless. Heavy
+# eth_sendRawTransaction calls touching many cold accounts/slots will fail with
+# "Too many subrequests". Re-enable after upgrading to Workers Paid.
+# [limits]
+# subrequests = 100_000
 
 # One Durable Object class = the stateful sandbox "node".
 [[durable_objects.bindings]]
