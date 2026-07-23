@@ -111,6 +111,22 @@ mirror the Go flags:
 Discovery: `eth_call` to `0x…fa4e` returns the ABI-encoded sandbox info string
 (same sentinel as the Go version).
 
+### Block tag
+
+The overlay is the **sandbox tip** — the merged real + sandbox state. State
+reads that carry a block parameter (`eth_call`, `eth_estimateGas`,
+`eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getStorageAt`)
+honor it with fork semantics:
+
+- `latest` / `pending` / `safe` / `finalized` (or omitted), and any block
+  number at or above the current tip → the **sandbox tip** (overlay applied), so
+  a read pinned to the block a just-sent tx landed in still sees it.
+- A concrete past block — a number **below** the tip, a block **hash**, or
+  `earliest` (the EIP-1898 object form is accepted too) → the **real chain** at
+  that block, overlay off. Historical blocks predate every sandbox mutation, so
+  they pass straight through to upstream. Only the numeric case consults the
+  (TTL-cached) tip; named tags never cost a subrequest.
+
 ## Status & known limitations
 
 **Verified locally** (TS 5.9, EthereumJS v10.1.2, against live Ethereum mainnet):
