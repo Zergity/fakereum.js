@@ -15,7 +15,7 @@
 
 import type { Upstream, BatchCall } from './upstream'
 import type { JsonValue } from './rpc'
-import { hexToBytes, toBigInt, toHash32Hex, type Hex } from './lib/hex'
+import { hexToBytes, toBigInt, toHash32Hex, ZERO_HASH, type Hex } from './lib/hex'
 
 // Persisted code entries live this long. Code changes upstream are rare
 // (proxy upgrades point at NEW addresses; the sandbox overlay always wins over
@@ -32,6 +32,18 @@ export interface PersistedCode {
 export interface CodeStore {
   get(addr: string): Promise<PersistedCode | undefined>
   put(addr: string, entry: PersistedCode): Promise<void>
+}
+
+/**
+ * The read surface ForkingStateManager needs. Fetcher satisfies it (lazy
+ * upstream fetch on miss); MissRecorder satisfies it too (zero on miss,
+ * recording what a speculative run WOULD have fetched).
+ */
+export interface StateReader {
+  getBalance(addr: Hex): Promise<bigint>
+  getNonce(addr: Hex): Promise<bigint>
+  getCode(addr: Hex): Promise<Uint8Array>
+  getStorageAt(addr: Hex, key32: Hex): Promise<Hex>
 }
 
 export interface BlockCtx {
@@ -100,6 +112,38 @@ export class Fetcher {
       await this.codeStore.put(a, { code: result, expiresAt: Date.now() + CODE_STORE_TTL_MS })
     }
     return result
+  }
+
+  // --- cache peeks (never touch upstream; used by MissRecorder) ------------
+
+  async peekBalance(addr: Hex): Promise<bigint | undefined> {
+    const v = this.memGet(this.keyFor('eth_getBalance', [addr, 'latest']))
+    return typeof v === 'string' ? toBigInt(v) : undefined
+  }
+
+  async peekNonce(addr: Hex): Promise<bigint | undefined> {
+    const v = this.memGet(this.keyFor('eth_getTransactionCount', [addr, 'latest']))
+    return typeof v === 'string' ? toBigInt(v) : undefined
+  }
+
+  async peekCode(addr: Hex): Promise<Uint8Array | undefined> {
+    const a = addr.toLowerCase()
+    const key = this.keyFor('eth_getCode', [a, 'latest'])
+    let v = this.memGet(key)
+    if (v === undefined && this.codeStore) {
+      const stored = await this.codeStore.get(a)
+      if (stored && Date.now() < stored.expiresAt) {
+        this.memSet(key, stored.code)
+        v = stored.code
+      }
+    }
+    if (typeof v !== 'string') return undefined
+    return v && v !== '0x' ? hexToBytes(v) : new Uint8Array(0)
+  }
+
+  async peekStorageAt(addr: Hex, key32: Hex): Promise<Hex | undefined> {
+    const v = this.memGet(this.keyFor('eth_getStorageAt', [addr, key32, 'latest']))
+    return typeof v === 'string' ? toHash32Hex(v || '0x') : undefined
   }
 
   // --- batched prefetch ----------------------------------------------------
@@ -260,4 +304,66 @@ function asString(v: JsonValue): string {
 }
 function asOptString(v: JsonValue | undefined): string | undefined {
   return typeof v === 'string' ? v : undefined
+}
+
+/**
+ * StateReader for speculative warm-up runs: answers from the Fetcher's caches
+ * only, records every miss (returning zero/empty for it) instead of issuing an
+ * upstream fetch. After the run, the recorded set is batch-fetched in one POST
+ * and the run repeats — see Executor.warmupRounds. Zero-valued guesses can
+ * steer a speculative run down a wrong branch; that self-corrects next round
+ * once the true values are cached, and the REAL run only ever sees the real
+ * Fetcher, so correctness never depends on this class.
+ */
+export class MissRecorder implements StateReader {
+  readonly accounts = new Set<Hex>()
+  readonly slots: Array<[Hex, Hex]> = []
+  /** cache keys of everything recorded, for cross-round progress tracking */
+  readonly keys = new Set<string>()
+  private readonly slotSeen = new Set<string>()
+
+  constructor(private readonly real: Fetcher) {}
+
+  get missCount(): number {
+    return this.keys.size
+  }
+
+  private markAccount(addr: Hex, kind: string): void {
+    this.accounts.add(addr.toLowerCase() as Hex)
+    this.keys.add(kind + ':' + addr.toLowerCase())
+  }
+
+  async getBalance(addr: Hex): Promise<bigint> {
+    const v = await this.real.peekBalance(addr)
+    if (v !== undefined) return v
+    this.markAccount(addr, 'bal')
+    return 0n
+  }
+
+  async getNonce(addr: Hex): Promise<bigint> {
+    const v = await this.real.peekNonce(addr)
+    if (v !== undefined) return v
+    this.markAccount(addr, 'nonce')
+    return 0n
+  }
+
+  async getCode(addr: Hex): Promise<Uint8Array> {
+    const v = await this.real.peekCode(addr)
+    if (v !== undefined) return v
+    this.markAccount(addr, 'code')
+    return new Uint8Array(0)
+  }
+
+  async getStorageAt(addr: Hex, key32: Hex): Promise<Hex> {
+    const v = await this.real.peekStorageAt(addr, key32)
+    if (v !== undefined) return v
+    const a = addr.toLowerCase() as Hex
+    const sk = a + ':' + key32
+    if (!this.slotSeen.has(sk)) {
+      this.slotSeen.add(sk)
+      this.slots.push([a, key32])
+      this.keys.add('slot:' + sk)
+    }
+    return ZERO_HASH
+  }
 }

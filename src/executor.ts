@@ -22,7 +22,7 @@ import { recoverAddress } from 'viem'
 
 import type { Config, DeployMethod, StoredLog, StoredTx, TxDiff } from './types'
 import type { Overlay, WorkingChange } from './overlay'
-import type { Fetcher } from './fetcher'
+import { MissRecorder, type Fetcher } from './fetcher'
 import { ForkingStateManager } from './statemanager'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
@@ -35,6 +35,11 @@ const ECRECOVER_ADDR = '0x0000000000000000000000000000000000000001'
 // Sender balance forced into the access-list simulation override: ample for
 // any gas*price+value, far below anything that could overflow u256 math.
 const PREFETCH_SENDER_BALANCE = '0xffffffffffffffffffffffffff'
+
+// Speculative warm-up rounds cap. Each round that finds new misses costs one
+// batch POST; the converging round costs zero. Rounds grow the fetched set by
+// at least one data-dependent hop, so real txs converge in 1-3.
+const MAX_WARM_ROUNDS = 6
 
 export interface ApplyResult {
   tx: StoredTx
@@ -144,9 +149,17 @@ export class Executor {
       block.coinbase,
     )
 
-    const sm = new ForkingStateManager(this.overlay, this.fetcher)
     const ejBlock = this.buildBlock(block, baseFee)
     const customPrecompiles = this.impersonators.isEmpty() ? undefined : [this.ecrecoverPrecompile()]
+
+    // Backstop for whatever the access-list prefetch missed (its upstream
+    // simulation can diverge from sandbox execution, or be refused outright):
+    // speculatively run the tx against the cache alone, batch-fetch every
+    // recorded miss, and repeat until a run completes fully warm. Costs one
+    // batch POST per round instead of one fetch per cold read.
+    await this.warmupRounds(tx, ejBlock, customPrecompiles)
+
+    const sm = new ForkingStateManager(this.overlay, this.fetcher)
     const vm: VM = await createVM({
       common: this.common,
       stateManager: sm,
@@ -234,6 +247,61 @@ export class Executor {
     const allowed = bal === 0n
     this.guardVerdict.set(k, allowed)
     return allowed
+  }
+
+  /**
+   * Speculative warm-up: run the tx on a throwaway VM whose reads come from
+   * the cache only (MissRecorder answers zero for anything cold and records
+   * it), then batch-fetch the whole recorded set in one POST and run again.
+   * A zero guess can steer a round down a wrong branch; the next round holds
+   * the true values and goes deeper, so the recorded set grows monotonically
+   * until a round finishes with no misses (typical: 1-3 rounds; the round
+   * that confirms convergence costs zero subrequests). Stops early when a
+   * round finds nothing new (e.g. reads that keep failing upstream) and caps
+   * at MAX_WARM_ROUNDS; anything still cold falls back to the lazy per-read
+   * path in the real run, which remains the source of correctness.
+   */
+  private async warmupRounds(
+    tx: Parameters<typeof runTx>[1]['tx'],
+    ejBlock: Parameters<typeof runTx>[1]['block'],
+    customPrecompiles: CustomPrecompile[] | undefined,
+  ): Promise<void> {
+    const fetched = new Set<string>()
+    for (let round = 0; round < MAX_WARM_ROUNDS; round++) {
+      const rec = new MissRecorder(this.fetcher)
+      const sm = new ForkingStateManager(this.overlay, rec)
+      const vm: VM = await createVM({
+        common: this.common,
+        stateManager: sm,
+        ...(customPrecompiles ? { evmOpts: { customPrecompiles } } : {}),
+      })
+      try {
+        await runTx(vm, {
+          tx,
+          block: ejBlock,
+          // Sender balance/nonce may still be zero-guesses; let the run reach
+          // the EVM anyway — the real run re-validates against true values.
+          skipNonce: true,
+          skipBalance: true,
+          skipHardForkValidation: true,
+        })
+      } catch {
+        // a speculative run may die on wrong guesses; its misses still count
+      }
+      let progress = false
+      for (const k of rec.keys) {
+        if (!fetched.has(k)) {
+          fetched.add(k)
+          progress = true
+        }
+      }
+      if (!progress) return // converged, or the remaining misses won't fetch
+      try {
+        await this.fetcher.prefetchState([...rec.accounts], rec.slots)
+      } catch {
+        return // upstream unwell — the real run surfaces the actual error
+      }
+    }
   }
 
   /**

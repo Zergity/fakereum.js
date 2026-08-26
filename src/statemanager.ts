@@ -19,7 +19,7 @@ import {
 } from '@ethereumjs/util'
 import type { AccountFields, StateManagerInterface } from '@ethereumjs/common'
 import type { Overlay, WorkingChange } from './overlay'
-import type { Fetcher } from './fetcher'
+import type { StateReader } from './fetcher'
 import type { AccountDiff, StorageChange, TxDiff } from './types'
 import {
   bytesToHex,
@@ -91,7 +91,8 @@ export class ForkingStateManager implements StateManagerInterface {
 
   constructor(
     private readonly overlay: Overlay,
-    private readonly fetcher: Fetcher,
+    // Fetcher in real runs; MissRecorder in speculative warm-up runs.
+    private readonly fetcher: StateReader,
   ) {
     this.originalStorageCache = {
       get: (address: Address, key: Uint8Array) => this.committedStorage(address, key),
