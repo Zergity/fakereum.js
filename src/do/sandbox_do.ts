@@ -36,7 +36,7 @@ import {
 import { chainName, upstreamExplorerForChain } from '../lib/chains'
 import { classifyBlockTag } from '../lib/blocktag'
 import { Upstream } from '../upstream'
-import { Fetcher } from '../fetcher'
+import { Fetcher, type PersistedCode } from '../fetcher'
 import { Overlay, type OverlayDelta } from '../overlay'
 import { Sandbox, parseLogFilter, logMatches } from '../sandbox'
 import { Executor, type CallArgs } from '../executor'
@@ -109,7 +109,14 @@ export class EvmSandbox {
   ) {
     this.cfg = loadConfig(env)
     this.upstream = new Upstream(this.cfg.upstreamRpcs)
-    this.fetcher = new Fetcher(this.upstream, this.cfg.cacheTtlMs, new Map())
+    // Code entries persist in DO storage (not subrequest-counted, survives
+    // eviction); everything else stays on the in-memory TTL cache. Upstream
+    // truth, not sandbox state — deliberately untouched by fakereum_clearSandbox.
+    this.fetcher = new Fetcher(this.upstream, this.cfg.cacheTtlMs, new Map(), {
+      get: (addr: string) => this.ctx.storage.get<PersistedCode>('codecache:' + addr),
+      put: (addr: string, entry: PersistedCode) =>
+        this.ctx.storage.put('codecache:' + addr, entry),
+    })
     this.limiter = RateLimiter.fromConfig(this.cfg.rateLimitRps, this.cfg.rateLimitExempt)
     // Hydrate persisted state before serving any request (re-runs on wake).
     this.ctx.blockConcurrencyWhile(async () => {

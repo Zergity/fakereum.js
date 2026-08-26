@@ -27,10 +27,14 @@ import { ForkingStateManager } from './statemanager'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
 import { decodeRevertReason } from './ui/decode'
-import { addrKey, bytesToHex, hexToBytes, toQuantity, type Hex } from './lib/hex'
+import { addrKey, bytesToHex, checksumAddress, hexToBytes, toQuantity, type Hex } from './lib/hex'
 
 const ECRECOVER_GAS = 3000n
 const ECRECOVER_ADDR = '0x0000000000000000000000000000000000000001'
+
+// Sender balance forced into the access-list simulation override: ample for
+// any gas*price+value, far below anything that could overflow u256 math.
+const PREFETCH_SENDER_BALANCE = '0xffffffffffffffffffffffffff'
 
 export interface ApplyResult {
   tx: StoredTx
@@ -127,6 +131,19 @@ export class Executor {
     const feeCap = txMaxFee(tx)
     if (feeCap !== null && feeCap > 0n && baseFee > feeCap) baseFee = feeCap
 
+    // Warm the fetcher cache for everything this tx is likely to touch, in 2-3
+    // batched subrequests, before the lazy fork starts issuing per-read
+    // fetches (3 per cold account + 1 per cold SLOAD — enough to blow the Free
+    // plan's 50-subrequest cap on a heavy tx).
+    await this.prefetchTouchedState(
+      fromHex,
+      tx.to ? (ejBytesToHex(tx.to.bytes) as Hex) : null,
+      tx.data,
+      tx.gasLimit,
+      tx.value,
+      block.coinbase,
+    )
+
     const sm = new ForkingStateManager(this.overlay, this.fetcher)
     const ejBlock = this.buildBlock(block, baseFee)
     const customPrecompiles = this.impersonators.isEmpty() ? undefined : [this.ecrecoverPrecompile()]
@@ -219,10 +236,71 @@ export class Executor {
     return allowed
   }
 
+  /**
+   * Best-effort cache warm-up: ask upstream for the call's access list (one
+   * subrequest), then batch-fetch every listed account + slot (one subrequest
+   * per 100 reads). The simulation runs with the sandbox overlay attached as
+   * state overrides and the sender's balance forced high (sandbox funds live
+   * only in the overlay; forcing it also keeps rare BALANCE(sender)-reading
+   * paths approximate rather than exact), so the traced path tracks SANDBOX
+   * execution closely. Whatever still diverges falls through to the existing
+   * lazy per-read fetch, which stays the source of correctness.
+   */
+  private async prefetchTouchedState(
+    from: Hex,
+    to: Hex | null,
+    data: Uint8Array,
+    gasLimit: bigint,
+    value: bigint,
+    coinbase?: Hex,
+  ): Promise<void> {
+    try {
+      const call: Record<string, unknown> = {
+        from,
+        data: bytesToHex(data),
+        value: toQuantity(value),
+      }
+      if (to) call['to'] = to
+      if (gasLimit > 0n) call['gas'] = toQuantity(gasLimit)
+      const overrides = this.overlay.asStateOverrides() as Record<string, Record<string, unknown>>
+      const senderKey =
+        Object.keys(overrides).find((k) => k.toLowerCase() === from.toLowerCase()) ??
+        checksumAddress(from)
+      overrides[senderKey] = { ...(overrides[senderKey] ?? {}), balance: PREFETCH_SENDER_BALANCE }
+      const list = await this.fetcher.createAccessList(call, overrides)
+      const accounts = new Set<Hex>([from.toLowerCase() as Hex])
+      if (to) accounts.add(to.toLowerCase() as Hex)
+      if (coinbase) accounts.add(coinbase.toLowerCase() as Hex)
+      const slots: Array<[Hex, Hex]> = []
+      if (list) {
+        for (const e of list) {
+          if (!e || typeof e.address !== 'string') continue
+          const a = e.address.toLowerCase() as Hex
+          accounts.add(a)
+          if (Array.isArray(e.storageKeys)) {
+            for (const k of e.storageKeys) if (typeof k === 'string') slots.push([a, k as Hex])
+          }
+        }
+      }
+      await this.fetcher.prefetchState([...accounts], slots)
+    } catch {
+      // best-effort only — every miss is covered by the lazy per-read path
+    }
+  }
+
   // --- read-only call (local mode eth_call / eth_estimateGas) -------------
 
   async call(args: CallArgs, overrides: Map<string, AccountOverride> | null): Promise<CallResult> {
     const block = await this.fetcher.getLatestBlock()
+    // Same batched warm-up as applyTx — in getStorageAt mode every local
+    // eth_call otherwise pays 3 singles per cold account + 1 per cold SLOAD.
+    await this.prefetchTouchedState(
+      args.from ?? (ZERO_ADDR as Hex),
+      args.to ?? null,
+      args.data ? hexToBytes(args.data) : new Uint8Array(0),
+      args.gas ?? 0n,
+      args.value ?? 0n,
+    )
     const sm = new ForkingStateManager(this.overlay, this.fetcher)
     if (overrides) {
       for (const [k, o] of overrides) {

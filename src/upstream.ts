@@ -15,6 +15,15 @@ import type { JsonValue, RpcResponse } from './rpc'
 // Delay before each retry pass over the URL list (total 2 extra passes).
 const RETRY_BACKOFF_MS = [250, 750]
 
+// Reads packed into one batch POST. Public endpoints cap batch sizes (commonly
+// 100); a request over the cap fails over to the next URL like any other error.
+const MAX_BATCH = 100
+
+export interface BatchCall {
+  method: string
+  params: unknown[]
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -24,8 +33,13 @@ export class Upstream {
     if (urls.length === 0) throw new Error('no upstream RPC configured')
   }
 
-  /** POST a JSON-RPC body, failing over across URLs and retrying with backoff. */
-  private async post(body: string, label: string): Promise<RpcResponse> {
+  /**
+   * POST a JSON-RPC body, failing over across URLs and retrying with backoff.
+   * `expectArray` selects batch shape validation: an endpoint that answers a
+   * batch with a bare object (no batch support / batch-size cap) fails over to
+   * the next URL instead of being returned as a mis-shaped success.
+   */
+  private async post(body: string, label: string, expectArray = false): Promise<unknown> {
     let lastErr: unknown
     for (let round = 0; ; round++) {
       let retryable = false
@@ -41,7 +55,12 @@ export class Upstream {
             if (r.status === 429 || r.status >= 500) retryable = true
             continue // rate-limited or down -> next URL (failover)
           }
-          return (await r.json()) as RpcResponse
+          const j: unknown = await r.json()
+          if (expectArray && !Array.isArray(j)) {
+            lastErr = new Error(`batch not supported (${url})`)
+            continue // shape mismatch is permanent for this URL -> failover only
+          }
+          return j
         } catch (e) {
           lastErr = e // transport error -> try next URL (failover)
           retryable = true
@@ -53,10 +72,42 @@ export class Upstream {
     throw new Error(`${label}: ${String(lastErr)}`)
   }
 
+  /**
+   * Issue many JSON-RPC calls as batch POSTs (MAX_BATCH per request) — the
+   * Workers subrequest cap counts HTTP requests, not RPC calls, so this is how
+   * a lazy fork stays inside the Free plan's 50-subrequest budget. Returns one
+   * response per call, index-aligned; a call the endpoint failed to answer gets
+   * a synthesized error response (never a hole).
+   */
+  async batch(calls: BatchCall[]): Promise<RpcResponse[]> {
+    const out: RpcResponse[] = new Array(calls.length)
+    for (let base = 0; base < calls.length; base += MAX_BATCH) {
+      const chunk = calls.slice(base, base + MAX_BATCH)
+      const body = JSON.stringify(
+        chunk.map((c, i) => ({ jsonrpc: '2.0', id: base + i, method: c.method, params: c.params })),
+      )
+      const arr = (await this.post(body, `upstream batch(${chunk.length})`, true)) as RpcResponse[]
+      for (const resp of arr) {
+        const idx = typeof resp?.id === 'number' ? resp.id : -1
+        if (idx >= base && idx < base + chunk.length) out[idx] = resp
+      }
+      for (let i = base; i < base + chunk.length; i++) {
+        if (!out[i]) {
+          out[i] = {
+            jsonrpc: '2.0',
+            id: i,
+            error: { code: -32603, message: 'missing batch response' },
+          }
+        }
+      }
+    }
+    return out
+  }
+
   /** Issue a JSON-RPC call, returning the full response (result OR error). */
   async call(method: string, params: unknown[]): Promise<RpcResponse> {
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
-    return this.post(body, `upstream ${method}`)
+    return (await this.post(body, `upstream ${method}`)) as RpcResponse
   }
 
   /** Issue a call and return its `result`, throwing on an RPC-level error. */
@@ -78,6 +129,6 @@ export class Upstream {
       method: req.method,
       params: req.params ?? [],
     })
-    return this.post(body, 'upstream forward')
+    return (await this.post(body, 'upstream forward')) as RpcResponse
   }
 }
