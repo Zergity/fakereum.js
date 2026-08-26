@@ -49,7 +49,10 @@ new_sqlite_classes = ["EvmSandbox"]
 [vars]
 # Upstream EVM JSON-RPC endpoint(s), comma-separated for failover. HTTP(S) only
 # in the Worker port (the Go version's WebSocket upstream is replaced by fetch()).
-UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com"
+# Public endpoints rate-limit by IP and all Worker traffic egresses from
+# Cloudflare's shared IPs, so a single endpoint 429s under any dapp burst —
+# list several so Upstream.post() can fail over (and backoff-retry the list).
+UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com,https://arb1.arbitrum.io/rpc,https://arbitrum.drpc.org,https://1rpc.io/arb"
 # Upstream Etherscan v2 API base.
 UPSTREAM_ETHERSCAN = "https://api.etherscan.io/v2/api"
 # Sandbox chain id. Set to the REAL Arbitrum One id (42161) so wallets/dapps

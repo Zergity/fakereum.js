@@ -233,31 +233,47 @@ export class EvmSandbox {
       }
     }
 
-    await this.ensureResolved()
+    // An exception escaping this fetch() surfaces as Cloudflare error 1101 — a
+    // raw 500 that never passes through decorate(), so it carries no CORS
+    // headers and browsers report an opaque CORS failure on top of the 500.
+    // Everything below must therefore resolve to a Response, never throw.
+    try {
+      await this.ensureResolved()
+    } catch (e) {
+      return this.decorate(
+        cors,
+        origin,
+        new Response('upstream unavailable: ' + String((e as Error).message ?? e), { status: 502 }),
+      )
+    }
     const baseURL = selfBaseURL(request, url)
 
     let resp: Response
     const path = url.pathname
-    if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
-      resp = this.serveLanding()
-    } else if (path === '/rpc' && request.method === 'POST') {
-      resp = await this.serveRpc(request, baseURL)
-    } else if (path === '/api' || path === '/v2/api') {
-      resp = await this.serveEtherscan(request, url)
-    } else if (path.startsWith('/tx/')) {
-      resp = await this.serveTxExplorer(path.slice('/tx/'.length), baseURL)
-    } else if (path.startsWith('/address/')) {
-      resp = await this.serveAddressExplorer(path.slice('/address/'.length), baseURL)
-    } else if (path === '/txs') {
-      resp = this.serveTxList(baseURL)
-    } else if (path === '/accounts') {
-      resp = this.serveAccountList(baseURL)
-    } else if (path.startsWith('/undo/') && request.method === 'POST') {
-      resp = await this.serveUndo(path.slice('/undo/'.length), request)
-    } else if (path === '/admin') {
-      resp = this.serveAdmin(baseURL, origin)
-    } else {
-      resp = new Response('not found', { status: 404 })
+    try {
+      if (path === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
+        resp = this.serveLanding()
+      } else if (path === '/rpc' && request.method === 'POST') {
+        resp = await this.serveRpc(request, baseURL)
+      } else if (path === '/api' || path === '/v2/api') {
+        resp = await this.serveEtherscan(request, url)
+      } else if (path.startsWith('/tx/')) {
+        resp = await this.serveTxExplorer(path.slice('/tx/'.length), baseURL)
+      } else if (path.startsWith('/address/')) {
+        resp = await this.serveAddressExplorer(path.slice('/address/'.length), baseURL)
+      } else if (path === '/txs') {
+        resp = this.serveTxList(baseURL)
+      } else if (path === '/accounts') {
+        resp = this.serveAccountList(baseURL)
+      } else if (path.startsWith('/undo/') && request.method === 'POST') {
+        resp = await this.serveUndo(path.slice('/undo/'.length), request)
+      } else if (path === '/admin') {
+        resp = this.serveAdmin(baseURL, origin)
+      } else {
+        resp = new Response('not found', { status: 404 })
+      }
+    } catch (e) {
+      resp = new Response('internal error: ' + String((e as Error).message ?? e), { status: 500 })
     }
     return this.decorate(cors, origin, resp)
   }
@@ -303,7 +319,15 @@ export class EvmSandbox {
 
     const rreq = rewriteImpersonatorRequest(req, this.impersonators)
 
-    const handled = await this.handleSandbox(rreq, baseURL)
+    // handleSandbox paths reach upstream fetches (forwardWithOverlayOverrides,
+    // rpcGetLogs, fetcher reads) that throw on exhausted failover — surface
+    // those as JSON-RPC errors so one bad request can't 500 a whole batch.
+    let handled: RpcResponse | null
+    try {
+      handled = await this.handleSandbox(rreq, baseURL)
+    } catch (e) {
+      return makeError(req.id, ERR_INTERNAL, String((e as Error).message ?? e))
+    }
     if (handled) {
       if (handled.result !== undefined && !handled.error) {
         handled.result = rewriteImpersonatorResponseResult(rreq.method, handled.result, this.impersonators)
@@ -825,11 +849,16 @@ export class EvmSandbox {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    await this.ensureResolved()
     let req: RpcRequest
     try {
       req = JSON.parse(typeof message === 'string' ? message : new TextDecoder().decode(message))
     } catch {
+      return
+    }
+    try {
+      await this.ensureResolved()
+    } catch (e) {
+      ws.send(JSON.stringify(makeError(req.id, ERR_INTERNAL, String((e as Error).message ?? e))))
       return
     }
     const att = (ws.deserializeAttachment() as WsAttachment | null) ?? { subs: [], baseURL: '' }

@@ -2,35 +2,61 @@
 // wsclient.go: the Worker speaks request/response fetch() instead of a
 // long-lived WebSocket. Multiple URLs => failover (try in order on transport
 // error), mirroring the Go --rpc comma-list semantics.
+//
+// Retry policy: public endpoints rate-limit by IP, and all Worker traffic
+// egresses from Cloudflare's shared IPs, so bursts of 429s are routine. A
+// failed pass over the URL list is retried with a short backoff — but only
+// when the failure is transient (transport error, HTTP 429, HTTP 5xx). A
+// non-retryable HTTP status (e.g. 400) fails over within the pass and then
+// throws immediately.
 
 import type { JsonValue, RpcResponse } from './rpc'
+
+// Delay before each retry pass over the URL list (total 2 extra passes).
+const RETRY_BACKOFF_MS = [250, 750]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 export class Upstream {
   constructor(private readonly urls: string[]) {
     if (urls.length === 0) throw new Error('no upstream RPC configured')
   }
 
+  /** POST a JSON-RPC body, failing over across URLs and retrying with backoff. */
+  private async post(body: string, label: string): Promise<RpcResponse> {
+    let lastErr: unknown
+    for (let round = 0; ; round++) {
+      let retryable = false
+      for (const url of this.urls) {
+        try {
+          const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body,
+          })
+          if (!r.ok) {
+            lastErr = new Error(`upstream HTTP ${r.status}`)
+            if (r.status === 429 || r.status >= 500) retryable = true
+            continue // rate-limited or down -> next URL (failover)
+          }
+          return (await r.json()) as RpcResponse
+        } catch (e) {
+          lastErr = e // transport error -> try next URL (failover)
+          retryable = true
+        }
+      }
+      if (!retryable || round >= RETRY_BACKOFF_MS.length) break
+      await sleep(RETRY_BACKOFF_MS[round] ?? 0)
+    }
+    throw new Error(`${label}: ${String(lastErr)}`)
+  }
+
   /** Issue a JSON-RPC call, returning the full response (result OR error). */
   async call(method: string, params: unknown[]): Promise<RpcResponse> {
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
-    let lastErr: unknown
-    for (const url of this.urls) {
-      try {
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body,
-        })
-        if (!r.ok) {
-          lastErr = new Error(`upstream HTTP ${r.status}`)
-          continue
-        }
-        return (await r.json()) as RpcResponse
-      } catch (e) {
-        lastErr = e // transport error -> try next URL (failover)
-      }
-    }
-    throw new Error(`upstream ${method}: ${String(lastErr)}`)
+    return this.post(body, `upstream ${method}`)
   }
 
   /** Issue a call and return its `result`, throwing on an RPC-level error. */
@@ -46,29 +72,12 @@ export class Upstream {
    * special-case. The envelope is normalized (jsonrpc/id always present).
    */
   async forward(req: { method: string; params?: unknown; id?: unknown }): Promise<RpcResponse> {
-    let lastErr: unknown
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: req.id ?? 1,
       method: req.method,
       params: req.params ?? [],
     })
-    for (const url of this.urls) {
-      try {
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body,
-        })
-        if (!r.ok) {
-          lastErr = new Error(`upstream HTTP ${r.status}`)
-          continue
-        }
-        return (await r.json()) as RpcResponse
-      } catch (e) {
-        lastErr = e
-      }
-    }
-    throw new Error(`upstream forward: ${String(lastErr)}`)
+    return this.post(body, 'upstream forward')
   }
 }
