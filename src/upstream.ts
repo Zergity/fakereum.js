@@ -19,6 +19,12 @@ const RETRY_BACKOFF_MS = [250, 750]
 // 100); a request over the cap fails over to the next URL like any other error.
 const MAX_BATCH = 100
 
+// How long a URL sits out after a rate-limit/quota/transport failure. Public
+// quotas are per-IP and all Worker traffic shares Cloudflare's egress IPs, so
+// once an endpoint says "limit" it will keep saying it — skipping it saves a
+// wasted subrequest per read while it cools down.
+const COOLDOWN_MS = 30_000
+
 export interface BatchCall {
   method: string
   params: unknown[]
@@ -28,9 +34,38 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * A JSON-RPC-level error that is really the PROVIDER refusing service (rate
+ * limit / quota / capacity) rather than the chain answering. Some providers
+ * (1rpc among them) return these as HTTP 200 + error body, which must fail
+ * over to the next URL instead of being surfaced as the "answer".
+ */
+function isProviderLimitError(e: { code?: number; message?: string } | undefined | null): boolean {
+  if (!e) return false
+  if (e.code === -32005 || e.code === 429) return true // EIP-1474 limit exceeded / http-ish
+  const m = (e.message ?? '').toLowerCase()
+  return /rate.?limit|usage limit|too many request|quota|over capacity|reached.*limit|limit (exceeded|reached)/.test(
+    m,
+  )
+}
+
 export class Upstream {
+  // url -> timestamp until which it sits out (in-memory; resets on DO eviction)
+  private readonly cooldown = new Map<string, number>()
+
   constructor(private readonly urls: string[]) {
     if (urls.length === 0) throw new Error('no upstream RPC configured')
+  }
+
+  /** URLs not currently cooling down; all of them when everything is benched. */
+  private candidates(): string[] {
+    const now = Date.now()
+    const ok = this.urls.filter((u) => (this.cooldown.get(u) ?? 0) <= now)
+    return ok.length > 0 ? ok : this.urls
+  }
+
+  private bench(url: string): void {
+    this.cooldown.set(url, Date.now() + COOLDOWN_MS)
   }
 
   /**
@@ -43,7 +78,7 @@ export class Upstream {
     let lastErr: unknown
     for (let round = 0; ; round++) {
       let retryable = false
-      for (const url of this.urls) {
+      for (const url of this.candidates()) {
         try {
           const r = await fetch(url, {
             method: 'POST',
@@ -52,18 +87,39 @@ export class Upstream {
           })
           if (!r.ok) {
             lastErr = new Error(`upstream HTTP ${r.status}`)
-            if (r.status === 429 || r.status >= 500) retryable = true
+            if (r.status === 429 || r.status >= 500) {
+              retryable = true
+              this.bench(url)
+            }
             continue // rate-limited or down -> next URL (failover)
           }
           const j: unknown = await r.json()
-          if (expectArray && !Array.isArray(j)) {
-            lastErr = new Error(`batch not supported (${url})`)
-            continue // shape mismatch is permanent for this URL -> failover only
+          if (expectArray) {
+            if (!Array.isArray(j)) {
+              lastErr = new Error(`batch not supported (${url})`)
+              continue // shape mismatch is permanent for this URL -> failover only
+            }
+            const rs = j as RpcResponse[]
+            if (rs.length > 0 && rs.every((x) => isProviderLimitError(x?.error))) {
+              lastErr = new Error(`provider limit (${url}): ${rs[0]!.error!.message}`)
+              retryable = true
+              this.bench(url)
+              continue // quota'd out (HTTP 200 + error bodies) -> next URL
+            }
+            return j
+          }
+          const resp = j as RpcResponse | null
+          if (resp && isProviderLimitError(resp.error)) {
+            lastErr = new Error(`provider limit (${url}): ${resp.error!.message}`)
+            retryable = true
+            this.bench(url)
+            continue // quota'd out (HTTP 200 + error body) -> next URL
           }
           return j
         } catch (e) {
           lastErr = e // transport error -> try next URL (failover)
           retryable = true
+          this.bench(url)
         }
       }
       if (!retryable || round >= RETRY_BACKOFF_MS.length) break

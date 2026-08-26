@@ -52,7 +52,10 @@ new_sqlite_classes = ["EvmSandbox"]
 # Public endpoints rate-limit by IP and all Worker traffic egresses from
 # Cloudflare's shared IPs, so a single endpoint 429s under any dapp burst —
 # list several so Upstream.post() can fail over (and backoff-retry the list).
-UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com,https://arb1.arbitrum.io/rpc,https://arbitrum.drpc.org,https://1rpc.io/arb"
+# 1rpc.io was dropped: its per-IP quota exhausts almost immediately on shared
+# CF egress IPs and it reports that as HTTP 200 + a JSON-RPC "usage limit"
+# error body (now detected and failed over, but the slot is better spent).
+UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com,https://arb1.arbitrum.io/rpc,https://arbitrum.drpc.org,https://arbitrum.meowrpc.com,https://arbitrum-one.public.blastapi.io"
 # Upstream Etherscan v2 API base.
 UPSTREAM_ETHERSCAN = "https://api.etherscan.io/v2/api"
 # Sandbox chain id. Set to the REAL Arbitrum One id (42161) so wallets/dapps
