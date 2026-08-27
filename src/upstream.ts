@@ -4,9 +4,10 @@
 // error), mirroring the Go --rpc comma-list semantics.
 //
 // Retry policy: public endpoints rate-limit by IP, and all Worker traffic
-// egresses from Cloudflare's shared IPs, so bursts of 429s are routine. A
-// failed pass over the URL list is retried with a short backoff — but only
-// when the failure is transient (transport error, HTTP 429, HTTP 5xx). A
+// egresses from Cloudflare's shared IPs, so bursts of 429s are routine — and
+// some endpoints express the same refusal as 401/403 instead. A failed pass
+// over the URL list is retried with a short backoff — but only when the
+// failure is transient (transport error, HTTP 401/403/429, HTTP 5xx). A
 // non-retryable HTTP status (e.g. 400) fails over within the pass and then
 // throws immediately.
 
@@ -40,11 +41,32 @@ function sleep(ms: number): Promise<void> {
  * (1rpc among them) return these as HTTP 200 + error body, which must fail
  * over to the next URL instead of being surfaced as the "answer".
  */
-function isProviderLimitError(e: { code?: number; message?: string } | undefined | null): boolean {
+export function isProviderLimitError(
+  e: { code?: number; message?: string } | undefined | null,
+): boolean {
   if (!e) return false
   if (e.code === -32005 || e.code === 429) return true // EIP-1474 limit exceeded / http-ish
   const m = (e.message ?? '').toLowerCase()
-  return /rate.?limit|usage limit|too many request|quota|over capacity|reached.*limit|limit (exceeded|reached)/.test(
+  return /rate.?limit|usage limit|too many request|quota|over capacity|reached.*limit|limit (exceeded|reached)|unauthorized|api.?key/.test(
+    m,
+  )
+}
+
+/**
+ * A JSON-RPC-level error saying the PROVIDER refuses this METHOD — some free
+ * endpoints disable compute methods on their public URL (meowrpc answers
+ * eth_call with HTTP 200 + -32000 "The method eth_call is not supported.")
+ * That is provider policy, not the chain's answer: fail over to the next URL.
+ * Only if every URL refuses is the refusal returned as the real answer (a
+ * passthrough method like debug_* may genuinely not exist anywhere).
+ */
+export function isMethodUnsupportedError(
+  e: { code?: number; message?: string } | undefined | null,
+): boolean {
+  if (!e) return false
+  if (e.code === -32601) return true // official "method not found"
+  const m = (e.message ?? '').toLowerCase()
+  return /\bmethod\b.{0,60}\b(not supported|unsupported|not available|not allowed|not enabled|disabled|does not exist|not found|not whitelisted)/.test(
     m,
   )
 }
@@ -52,20 +74,40 @@ function isProviderLimitError(e: { code?: number; message?: string } | undefined
 export class Upstream {
   // url -> timestamp until which it sits out (in-memory; resets on DO eviction)
   private readonly cooldown = new Map<string, number>()
+  // url -> methods the provider refused with a "not supported" error body.
+  // Skipping saves the wasted subrequest on every later call; a success clears
+  // the mark, so a provider re-enabling a method heals itself. (In-memory;
+  // resets on DO eviction, like cooldown.)
+  private readonly unsupported = new Map<string, Set<string>>()
 
   constructor(private readonly urls: string[]) {
     if (urls.length === 0) throw new Error('no upstream RPC configured')
   }
 
-  /** URLs not currently cooling down; all of them when everything is benched. */
-  private candidates(): string[] {
+  /**
+   * URLs not currently cooling down; all of them when everything is benched.
+   * With a method hint, URLs known to refuse that method are also skipped —
+   * unless that would leave nothing, in which case they get re-probed.
+   */
+  private candidates(method?: string): string[] {
     const now = Date.now()
-    const ok = this.urls.filter((u) => (this.cooldown.get(u) ?? 0) <= now)
-    return ok.length > 0 ? ok : this.urls
+    let ok = this.urls.filter((u) => (this.cooldown.get(u) ?? 0) <= now)
+    if (ok.length === 0) ok = this.urls
+    if (method) {
+      const sup = ok.filter((u) => !this.unsupported.get(u)?.has(method))
+      if (sup.length > 0) return sup
+    }
+    return ok
   }
 
   private bench(url: string): void {
     this.cooldown.set(url, Date.now() + COOLDOWN_MS)
+  }
+
+  private markUnsupported(url: string, method: string): void {
+    let s = this.unsupported.get(url)
+    if (!s) this.unsupported.set(url, (s = new Set()))
+    s.add(method)
   }
 
   /**
@@ -74,11 +116,17 @@ export class Upstream {
    * batch with a bare object (no batch support / batch-size cap) fails over to
    * the next URL instead of being returned as a mis-shaped success.
    */
-  private async post(body: string, label: string, expectArray = false): Promise<unknown> {
+  private async post(
+    body: string,
+    label: string,
+    expectArray = false,
+    method?: string,
+  ): Promise<unknown> {
     let lastErr: unknown
+    let lastUnsupported: RpcResponse | null = null
     for (let round = 0; ; round++) {
       let retryable = false
-      for (const url of this.candidates()) {
+      for (const url of this.candidates(method)) {
         try {
           const r = await fetch(url, {
             method: 'POST',
@@ -87,11 +135,11 @@ export class Upstream {
           })
           if (!r.ok) {
             lastErr = new Error(`upstream HTTP ${r.status}`)
-            if (r.status === 429 || r.status >= 500) {
+            if (r.status === 401 || r.status === 403 || r.status === 429 || r.status >= 500) {
               retryable = true
               this.bench(url)
             }
-            continue // rate-limited or down -> next URL (failover)
+            continue // rate-limited/blocked or down -> next URL (failover)
           }
           const j: unknown = await r.json()
           if (expectArray) {
@@ -100,7 +148,10 @@ export class Upstream {
               continue // shape mismatch is permanent for this URL -> failover only
             }
             const rs = j as RpcResponse[]
-            if (rs.length > 0 && rs.every((x) => isProviderLimitError(x?.error))) {
+            if (
+              rs.length > 0 &&
+              rs.every((x) => isProviderLimitError(x?.error) || isMethodUnsupportedError(x?.error))
+            ) {
               lastErr = new Error(`provider limit (${url}): ${rs[0]!.error!.message}`)
               retryable = true
               this.bench(url)
@@ -115,6 +166,13 @@ export class Upstream {
             this.bench(url)
             continue // quota'd out (HTTP 200 + error body) -> next URL
           }
+          if (resp && isMethodUnsupportedError(resp.error)) {
+            lastErr = new Error(`method unsupported (${url}): ${resp.error!.message}`)
+            lastUnsupported = resp
+            if (method) this.markUnsupported(url, method)
+            continue // provider refuses this method, not benched -> next URL
+          }
+          if (resp && method) this.unsupported.get(url)?.delete(method)
           return j
         } catch (e) {
           lastErr = e // transport error -> try next URL (failover)
@@ -125,6 +183,9 @@ export class Upstream {
       if (!retryable || round >= RETRY_BACKOFF_MS.length) break
       await sleep(RETRY_BACKOFF_MS[round] ?? 0)
     }
+    // Every URL refused the method (nothing serves it) -> the refusal IS the
+    // answer; return it as a normal JSON-RPC error instead of throwing.
+    if (lastUnsupported) return lastUnsupported
     throw new Error(`${label}: ${String(lastErr)}`)
   }
 
@@ -163,7 +224,7 @@ export class Upstream {
   /** Issue a JSON-RPC call, returning the full response (result OR error). */
   async call(method: string, params: unknown[]): Promise<RpcResponse> {
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
-    return (await this.post(body, `upstream ${method}`)) as RpcResponse
+    return (await this.post(body, `upstream ${method}`, false, method)) as RpcResponse
   }
 
   /** Issue a call and return its `result`, throwing on an RPC-level error. */
@@ -185,6 +246,6 @@ export class Upstream {
       method: req.method,
       params: req.params ?? [],
     })
-    return (await this.post(body, 'upstream forward')) as RpcResponse
+    return (await this.post(body, 'upstream forward', false, req.method)) as RpcResponse
   }
 }
