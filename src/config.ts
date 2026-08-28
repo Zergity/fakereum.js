@@ -1,7 +1,7 @@
 // env (wrangler vars + secrets) -> resolved Config. Replaces config.go's
 // flag/.env/JSON resolution; in Workers every knob arrives as an env string.
 
-import type { Config, Env, EthCallStorageMode, GenesisAlloc } from './types'
+import type { Config, Env, EthCallStorageMode, EtherscanStyle, GenesisAlloc } from './types'
 import { toAddress, type Hex } from './lib/hex'
 import {
   chainName,
@@ -66,11 +66,20 @@ export function loadConfig(env: Env): Config {
   const ttlSec = env.CACHE_TTL && env.CACHE_TTL.trim() !== '' ? Number(env.CACHE_TTL) : 12
   const rps = env.RATE_LIMIT_RPS && env.RATE_LIMIT_RPS.trim() !== '' ? Number(env.RATE_LIMIT_RPS) : 0
 
+  const upstreamEtherscan = (env.UPSTREAM_ETHERSCAN || 'https://api.etherscan.io/v2/api').trim()
+  const styleRaw = (env.UPSTREAM_ETHERSCAN_STYLE || '').trim().toLowerCase()
+  const etherscanStyle: EtherscanStyle =
+    styleRaw === 'blockscout' ||
+    (styleRaw !== 'etherscan' && upstreamEtherscan.toLowerCase().includes('blockscout'))
+      ? 'blockscout'
+      : 'etherscan'
+
   return {
     upstreamRpcs: splitCSV(env.UPSTREAM_RPC || 'https://ethereum-rpc.publicnode.com').map(
       toHttpUpstream,
     ),
-    upstreamEtherscan: (env.UPSTREAM_ETHERSCAN || 'https://api.etherscan.io/v2/api').trim(),
+    upstreamEtherscan,
+    etherscanStyle,
     etherscanKeys: splitCSV(env.ETHERSCAN_API_KEY),
     chainId: parseChainID(env.CHAIN_ID),
     upstreamChainId: 0n,

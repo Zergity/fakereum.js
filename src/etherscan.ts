@@ -134,6 +134,11 @@ export interface RewriteEtherscanOpts {
   apiKey?: string
   /** Impersonator B -> impersonatee A address swap. */
   swap: (addr: Hex) => Hex
+  /**
+   * getLogs fromBlock/toBlock format the upstream expects: 'hex' (Etherscan
+   * v2, default) or 'decimal' (Blockscout's Etherscan-compat endpoint).
+   */
+  blockFormat?: 'hex' | 'decimal'
 }
 
 /**
@@ -166,7 +171,7 @@ export function rewriteEtherscanParams(
       const [nv, changed] = rewriteTopicHex(v, opts.swap)
       if (changed) out.set(key, nv)
     }
-    normalizeGetLogsBlocks(out)
+    normalizeGetLogsBlocks(out, opts.blockFormat ?? 'hex')
   }
 
   // chainid is ALWAYS forced to the upstream chain id.
@@ -225,17 +230,18 @@ function rewriteTopicHex(s: string, swap: (addr: Hex) => Hex): [string, boolean]
 }
 
 /**
- * Rewrite decimal fromBlock/toBlock to 0x-hex in place. Upstream Etherscan v2's
- * getLogs silently returns "No records found" for bare-decimal block numbers.
- * Named tags (latest/pending/safe/finalized/earliest) and already-0x values are
- * left untouched.
+ * Rewrite fromBlock/toBlock in place to the number format the upstream
+ * explorer expects. Etherscan v2's getLogs silently returns "No records found"
+ * for bare-decimal block numbers ('hex'); Blockscout's Etherscan-compat
+ * endpoint rejects 0x-hex with "Invalid fromBlock format" ('decimal'). Named
+ * tags (latest/pending/safe/finalized/earliest) and values already in the
+ * target format are left untouched.
  */
-function normalizeGetLogsBlocks(params: URLSearchParams): void {
+function normalizeGetLogsBlocks(params: URLSearchParams, format: 'hex' | 'decimal'): void {
   for (const key of ['fromBlock', 'toBlock']) {
     const v = params.get(key)
     if (!v) continue
     const lower = v.toLowerCase()
-    if (lower.startsWith('0x')) continue
     switch (lower) {
       case 'latest':
       case 'pending':
@@ -244,8 +250,15 @@ function normalizeGetLogsBlocks(params: URLSearchParams): void {
       case 'earliest':
         continue
     }
-    if (!isDecimal(v)) continue
-    params.set(key, '0x' + BigInt(v).toString(16))
+    if (format === 'hex') {
+      if (lower.startsWith('0x')) continue
+      if (!isDecimal(v)) continue
+      params.set(key, '0x' + BigInt(v).toString(16))
+    } else {
+      if (!lower.startsWith('0x')) continue
+      if (!isHexString(v)) continue
+      params.set(key, BigInt(v).toString(10))
+    }
   }
 }
 

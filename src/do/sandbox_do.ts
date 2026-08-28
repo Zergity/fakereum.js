@@ -665,8 +665,9 @@ export class EvmSandbox {
     // The public proxy requires the CALLER's own Etherscan API key and passes
     // it straight through. The server's configured key (nextEtherscanKey) is
     // reserved for Worker-internal limited queries (contract ABI / verified
-    // source, tests) — never injected into proxied traffic.
-    if (!params.get('apikey')) {
+    // source, tests) — never injected into proxied traffic. Blockscout-style
+    // upstreams take no API key, so the gate only applies to Etherscan proper.
+    if (this.cfg.etherscanStyle === 'etherscan' && !params.get('apikey')) {
       return jsonResponse({
         status: '0',
         message: 'NOTOK',
@@ -678,6 +679,7 @@ export class EvmSandbox {
     const rewritten = rewriteEtherscanParams(params, {
       upstreamChainId: this.cfg.upstreamChainId,
       swap,
+      blockFormat: this.cfg.etherscanStyle === 'blockscout' ? 'decimal' : 'hex',
     })
 
     if (isGetLogs(rewritten)) {

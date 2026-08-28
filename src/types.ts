@@ -10,6 +10,8 @@ export interface Env {
   EVM_SANDBOX: DurableObjectNamespace
   UPSTREAM_RPC: string
   UPSTREAM_ETHERSCAN: string
+  /** "etherscan" | "blockscout"; unset = sniffed from the UPSTREAM_ETHERSCAN URL. */
+  UPSTREAM_ETHERSCAN_STYLE?: string
   /** Secret; comma-separated for rotation. */
   ETHERSCAN_API_KEY?: string
   CHAIN_ID?: string
@@ -29,6 +31,13 @@ export interface Env {
 
 export type EthCallStorageMode = 'stateOverride' | 'getStorageAt'
 
+/**
+ * Upstream explorer API dialect. Etherscan v2 wants 0x-hex getLogs block
+ * numbers and needs an apikey; Blockscout's Etherscan-compat endpoint wants
+ * bare decimals and takes no key.
+ */
+export type EtherscanStyle = 'etherscan' | 'blockscout'
+
 // --------------------------------------------------------------------------
 // Resolved config. Static fields come from env at construction; chainId/symbol/
 // networkName/upstreamChainId are filled once the upstream chain id is known.
@@ -36,6 +45,7 @@ export type EthCallStorageMode = 'stateOverride' | 'getStorageAt'
 export interface Config {
   upstreamRpcs: string[]
   upstreamEtherscan: string
+  etherscanStyle: EtherscanStyle
   etherscanKeys: string[]
   /** Sandbox chain id. 0n until resolved (then derived or from CHAIN_ID). */
   chainId: bigint
