@@ -65,12 +65,15 @@ Requires Node 20+ and a Cloudflare account (Free plan is enough).
 ```sh
 cd fakereum.js
 npm install
-# configure upstream + options in wrangler.toml [vars]
-# set the Etherscan key(s) as a secret (optional, enables the log merge + rotation):
-npx wrangler secret put ETHERSCAN_API_KEY     # comma-separate for rotation
-npm run typecheck      # tsc --noEmit
-npm run dev            # local: wrangler dev
-npm run deploy         # ship it
+# one deployment per upstream chain, kept side by side:
+#   - wrangler.toml [env.<chainid>] — worker name + [vars] for that chain
+#   - pages/<chainid>/wrangler.toml — its public Pages front door
+#   - .prod.vars.<chainid> (gitignored) — its secrets, see .prod.vars.example
+npm run typecheck                  # tsc --noEmit
+npm run dev                        # local: wrangler dev (config via .dev.vars)
+npm run deploy:secrets -- 42161    # first deploy of a chain: code + secrets
+npm run deploy -- 42161            # later deploys (secrets preserved)
+npm run deploy:pages -- 42161      # the public Pages front door
 ```
 
 For local dev secrets, copy `.dev.vars.example` to `.dev.vars`.

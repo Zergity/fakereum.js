@@ -1,7 +1,9 @@
-# Production secret overrides. Copy to `.prod.vars` (gitignored) and fill in
-# real values, then deploy with:  npm run deploy:secrets
+# Production secret overrides. One file per chain deployment: copy to
+# `.prod.vars.<chainid>` (gitignored) and fill in real values, then deploy
+# with:  npm run deploy:secrets -- <chainid>
 #
-# `wrangler deploy --secrets-file .prod.vars` uploads each KEY=value below as an
+# `wrangler deploy --env <chainid> --secrets-file .prod.vars.<chainid>` uploads
+# each KEY=value below as an
 # encrypted Worker Secret (NOT a plaintext var), in the same step as the code.
 # Secrets override wrangler.toml [vars] of the same name and persist across plain
 # `wrangler deploy` runs. Keep these keys OUT of wrangler.toml [vars] — a

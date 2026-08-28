@@ -4,7 +4,16 @@
 # to a single SQLite-backed Durable Object per sandbox chain id. The EVM runs
 # *inside* the DO, which gets a 30s CPU budget on every plan (including Free);
 # a plain Worker request on Free is capped at 10ms, far too little for the EVM.
-name = "fakereum-42161-rpc"
+#
+# One deployment per upstream chain, kept side by side as wrangler environments
+# ([env.<upstreamChainId>] blocks below). Always deploy WITH an environment:
+#   npm run deploy -- <chainid>            plain deploy (secrets preserved)
+#   npm run deploy:secrets -- <chainid>    deploy + upload .prod.vars.<chainid>
+#   npm run deploy:pages -- <chainid>      deploy the pages/<chainid> front door
+# A bare `wrangler deploy` (no --env) would create a stray "fakereum-rpc"
+# worker from this top-level config; the top level exists only so `wrangler
+# dev` and `npm run build` work without picking an environment.
+name = "fakereum-rpc"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 compatibility_flags = ["nodejs_compat"]
@@ -28,7 +37,9 @@ compatibility_flags = ["nodejs_compat"]
 # [limits]
 # subrequests = 100_000
 
-# One Durable Object class = the stateful sandbox "node".
+# One Durable Object class = the stateful sandbox "node". durable_objects is a
+# NON-inheritable key, so every [env.<chainid>] block repeats this binding; the
+# copy here serves `wrangler dev` / `npm run build` without an environment.
 [[durable_objects.bindings]]
 name = "EVM_SANDBOX"
 class_name = "EvmSandbox"
@@ -36,72 +47,136 @@ class_name = "EvmSandbox"
 # SQLite storage backend -> required for, and available on, the Free plan.
 # (The legacy key-value storage backend is Paid-only.) The SQLite-backed DO
 # still exposes the ctx.storage key-value API used throughout this port.
+# Migrations are top-level only and apply to every environment.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["EvmSandbox"]
 
 # ---------------------------------------------------------------------------
-# Configuration (mirrors the Go fakereum flags/env). Override per-deployment.
-# Secrets (ETHERSCAN_API_KEY) should be set with `wrangler secret put`, NOT here.
-# ---------------------------------------------------------------------------
-# Production deployment: Arbitrum One (upstream chain id 42161). Mirrors
-# .dev.vars. Secrets (ETHERSCAN_API_KEY) are set via `wrangler secret put`.
-[vars]
-# Upstream EVM JSON-RPC endpoint(s), comma-separated for failover. HTTP(S) only
-# in the Worker port (the Go version's WebSocket upstream is replaced by fetch()).
-# Public endpoints rate-limit by IP and all Worker traffic egresses from
-# Cloudflare's shared IPs, so a single endpoint 429s under any dapp burst —
-# list several so Upstream.post() can fail over (and backoff-retry the list).
-# 1rpc.io was dropped: its per-IP quota exhausts almost immediately on shared
-# CF egress IPs and it reports that as HTTP 200 + a JSON-RPC "usage limit"
-# error body (now detected and failed over, but the slot is better spent).
-# meowrpc was dropped: its public endpoint disables eth_call outright — the
-# hottest forwarded method (stateOverride mode) — answering HTTP 200 +
-# -32000 "The method eth_call is not supported." (now detected and failed
-# over, but the slot is better spent). nodies and tenderly both accept the
-# 3-param eth_call-with-stateOverrides shape fakereum forwards.
-UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com,https://arb1.arbitrum.io/rpc,https://arbitrum.drpc.org,https://arb-pokt.nodies.app,https://arbitrum.gateway.tenderly.co,https://arbitrum-one.public.blastapi.io"
-# Upstream Etherscan v2 API base.
-UPSTREAM_ETHERSCAN = "https://api.etherscan.io/v2/api"
-# Sandbox chain id. Set to the REAL Arbitrum One id (42161) so wallets/dapps
-# treat it exactly like Arbitrum (no network switch). Because the ids now match,
-# a sandbox tx is byte-identical to a valid Arbitrum tx — the replay guard below
-# MUST stay on in this mode to stop sandbox txs being replayed onto real Arbitrum.
-CHAIN_ID = "42161"
-# Native currency symbol. "" = "F" + upstream symbol (e.g. FETH).
-SYMBOL = "FETH"
-# Network name. "" = "Fake " + upstream chain name.
-NETWORK_NAME = "Fake Arbitrum One"
-# eth_call / eth_estimateGas storage strategy: "stateOverride" (default; 1
-# upstream call, Free-safe) or "getStorageAt" (local EVM, 1 fetch per cold
-# SLOAD -- can exceed the Free 50-subrequest cap on heavy calls).
-ETH_CALL_STORAGE_MODE = "stateOverride"
-# Upstream-read cache TTL (seconds).
-CACHE_TTL = "12"
-# Replay guard: "auto" (on iff CHAIN_ID == upstream id), "true", or "false".
-# Forced ON: rejects eth_sendRawTransaction from any signer that holds a non-zero
-# native balance on real Arbitrum, because such a tx (same chain id) could be
-# replayed onto the real chain. Only zero-upstream-balance (Fake-token-only)
-# wallets may transact. (With CHAIN_ID==42161, "auto" would also enable it.)
-REJECT_UPSTREAM_SIGNERS = "true"
+# Configuration (mirrors the Go fakereum flags/env). `vars` are NON-inheritable:
+# each [env.<chainid>] carries its complete set. Shared knobs, documented once:
+#
+#   UPSTREAM_RPC              upstream JSON-RPC endpoint(s), comma-separated for
+#                             failover. HTTP(S) only in the Worker port (the Go
+#                             version's WebSocket upstream is replaced by
+#                             fetch()). Public endpoints rate-limit by IP and
+#                             all Worker traffic egresses from Cloudflare's
+#                             shared IPs, so a single endpoint 429s under any
+#                             dapp burst — list several so Upstream.post() can
+#                             fail over (and backoff-retry the list). Every
+#                             endpoint listed must accept the 3-param
+#                             eth_call-with-stateOverrides shape fakereum
+#                             forwards (the hottest method in stateOverride
+#                             mode) — see the per-chain notes for dropped ones.
+#   UPSTREAM_ETHERSCAN        upstream explorer API base (Etherscan v2 or a
+#                             Blockscout Etherscan-compat endpoint).
+#   UPSTREAM_ETHERSCAN_STYLE  "etherscan" | "blockscout"; unset = sniffed from
+#                             the URL. blockscout style sends decimal getLogs
+#                             block numbers and drops the apikey requirement.
+#   CHAIN_ID                  sandbox chain id. Set to the REAL upstream id so
+#                             wallets/dapps need no network switch. Because the
+#                             ids then match, a sandbox tx is byte-identical to
+#                             a valid upstream tx — the replay guard MUST stay
+#                             on in this mode.
+#   SYMBOL                    native currency symbol. "" = "F" + upstream
+#                             symbol (e.g. FETH).
+#   NETWORK_NAME              network name. "" = "Fake " + upstream chain name.
+#   ETH_CALL_STORAGE_MODE     eth_call / eth_estimateGas storage strategy:
+#                             "stateOverride" (default; 1 upstream call,
+#                             Free-safe) or "getStorageAt" (local EVM, 1 fetch
+#                             per cold SLOAD — can exceed the Free
+#                             50-subrequest cap on heavy calls).
+#   CACHE_TTL                 upstream-read cache TTL (seconds).
+#   REJECT_UPSTREAM_SIGNERS   replay guard: "auto" (on iff CHAIN_ID == upstream
+#                             id), "true", or "false". When on, rejects
+#                             eth_sendRawTransaction from any signer holding a
+#                             non-zero native balance on the real chain — only
+#                             zero-upstream-balance (Fake-token-only) wallets
+#                             may transact.
+#   IMPERSONATE               seed impersonator mappings "B:A,B2:A2"
+#                             (impersonator:impersonatee).
+#   RATE_LIMIT_RPS            per-IP rate limit (req/s); <=0 disables. (Go
+#                             burst=100 is auto-derived here as 2*rps=100.)
+#   RATE_LIMIT_EXEMPT         comma-separated IPs/CIDRs (v4 or v6) that bypass
+#                             the rate limit. The per-IP key is
+#                             CF-Connecting-IP, so loopback/private entries
+#                             never match in production — kept for parity with
+#                             the Go config.
+#
 # Deployment-specific / personal config — ADMINS, GENESIS, CORS_ORIGINS and the
-# ETHERSCAN_API_KEY secret — is intentionally NOT committed here. It is uploaded
-# as encrypted Secrets at deploy time from the gitignored .prod.vars file via
-#   npm run deploy:secrets        (see .prod.vars.example for the format)
-# Secrets override [vars] and persist across plain `wrangler deploy`. These keys
-# are kept OUT of [vars] on purpose: a committed [vars] entry of the same name
-# would overwrite the Secret on the next plain deploy.
+# ETHERSCAN_API_KEY secret — is intentionally NOT committed here. It lives in
+# gitignored .prod.vars.<chainid> files (see .prod.vars.example) uploaded as
+# encrypted Secrets via `npm run deploy:secrets -- <chainid>`. Secrets override
+# [vars] and persist across plain deploys. Keep those keys OUT of [vars]: a
+# committed [vars] entry of the same name would clobber the Secret on the next
+# plain deploy.
 #   ADMINS         comma-separated admin addrs (EIP-712 impersonation + clear)
 #   GENESIS        inline geth-style {"alloc":{...}} prefund
 #   CORS_ORIGINS   comma-separated origin allowlist; unset/empty = "*"
-# Seed impersonator mappings "B:A,B2:A2" (impersonator:impersonatee).
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Arbitrum One (upstream chain id 42161).
+# Front door: pages/42161 -> https://fakereum-42161.derion.io
+# ---------------------------------------------------------------------------
+[env.42161]
+name = "fakereum-42161-rpc"
+
+[[env.42161.durable_objects.bindings]]
+name = "EVM_SANDBOX"
+class_name = "EvmSandbox"
+
+# Endpoint notes:
+# 1rpc.io was dropped: its per-IP quota exhausts almost immediately on shared
+# CF egress IPs and it reports that as HTTP 200 + a JSON-RPC "usage limit"
+# error body (now detected and failed over, but the slot is better spent).
+# meowrpc was dropped: its public endpoint disables eth_call outright,
+# answering HTTP 200 + -32000 "The method eth_call is not supported." (now
+# detected and failed over, but the slot is better spent). nodies and tenderly
+# both accept the 3-param eth_call-with-stateOverrides shape.
+[env.42161.vars]
+UPSTREAM_RPC = "https://arbitrum-one-rpc.publicnode.com,https://arb1.arbitrum.io/rpc,https://arbitrum.drpc.org,https://arb-pokt.nodies.app,https://arbitrum.gateway.tenderly.co,https://arbitrum-one.public.blastapi.io"
+UPSTREAM_ETHERSCAN = "https://api.etherscan.io/v2/api"
+CHAIN_ID = "42161"
+SYMBOL = "FETH"
+NETWORK_NAME = "Fake Arbitrum One"
+ETH_CALL_STORAGE_MODE = "stateOverride"
+CACHE_TTL = "12"
+REJECT_UPSTREAM_SIGNERS = "true"
 IMPERSONATE = ""
-# Per-IP rate limit (req/s); <=0 disables. (Go burst=100 is auto-derived here as
-# 2*rps=100.)
 RATE_LIMIT_RPS = "50"
-# Comma-separated IPs/CIDRs (v4 or v6) that bypass the rate limit. The per-IP key
-# is CF-Connecting-IP, so loopback/private entries below never match in
-# production — kept for parity with the Go config.
 RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
-# GENESIS (inline geth-style {"alloc":{...}} prefund) is a deploy-time Secret —
-# see the note in the ADMINS block above; unset here = no prefund.
+
+# ---------------------------------------------------------------------------
+# Robinhood Chain (upstream chain id 4663, Arbitrum Orbit L2).
+# Front door: pages/4663 -> https://fakereum-4663.derion.io
+# ---------------------------------------------------------------------------
+[env.4663]
+name = "fakereum-4663-rpc"
+
+[[env.4663.durable_objects.bindings]]
+name = "EVM_SANDBOX"
+class_name = "EvmSandbox"
+
+# Endpoint notes:
+# robinhood.drpc.org was dropped: its free tier refuses eth_call outright
+# (-32601 "method does not exist"), so every routed call wastes a subrequest
+# before failing over. rpc.arrowrpc.com (listed on chainid.network) was dead at
+# deploy time (Cloudflare error 1033).
+# Explorer: Etherscan v2 does NOT cover chain 4663, so UPSTREAM_ETHERSCAN
+# points at the chain's Blockscout Etherscan-compat endpoint (style sniffed
+# from the URL: decimal getLogs blocks, no apikey). Blockscout rate-limits
+# anonymous requests from CF shared egress IPs, so callers may need to pass
+# their own Blockscout apikey (passed through as-is).
+[env.4663.vars]
+UPSTREAM_RPC = "https://rpc.mainnet.chain.robinhood.com,https://robinhood-rpc.publicnode.com"
+UPSTREAM_ETHERSCAN = "https://robinhoodchain.blockscout.com/api"
+CHAIN_ID = "4663"
+SYMBOL = "FETH"
+NETWORK_NAME = "Fake Robinhood Chain"
+ETH_CALL_STORAGE_MODE = "stateOverride"
+CACHE_TTL = "12"
+REJECT_UPSTREAM_SIGNERS = "true"
+IMPERSONATE = ""
+RATE_LIMIT_RPS = "50"
+RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
