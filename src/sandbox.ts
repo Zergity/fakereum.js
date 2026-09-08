@@ -79,6 +79,20 @@ export class Sandbox {
     return this.txs.get(hash.toLowerCase())
   }
 
+  /**
+   * The lowest block any stored sandbox tx landed in — the block the overlay came
+   * into existence — or undefined while no tx is stored. Recomputed per call (the
+   * store is small and txs can be undone/cleared), so it never goes stale.
+   */
+  firstBlockNumber(): bigint | undefined {
+    let min: bigint | undefined
+    for (const tx of this.txs.values()) {
+      const b = toBigInt(tx.blockNumber)
+      if (min === undefined || b < min) min = b
+    }
+    return min
+  }
+
   /** All txs, newest block first (then by hash) — for /txs. */
   allEntries(): StoredTx[] {
     return [...this.txs.values()].sort((a, b) => {

@@ -34,7 +34,7 @@ import {
   type Hex,
 } from '../lib/hex'
 import { chainName, upstreamExplorerForChain } from '../lib/chains'
-import { classifyBlockTag } from '../lib/blocktag'
+import { isHistoricalBlockTag } from '../lib/blocktag'
 import { Upstream } from '../upstream'
 import { Fetcher, type PersistedCode } from '../fetcher'
 import { Overlay, type OverlayDelta } from '../overlay'
@@ -441,7 +441,7 @@ export class EvmSandbox {
   private async rpcGetBalance(id: RpcRequest['id'], params: unknown[]): Promise<RpcResponse | null> {
     const addr = asAddr(params[0])
     if (!addr) return makeError(id, ERR_INVALID_PARAMS, 'invalid address')
-    if (await this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
+    if (this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
     const ovl = this.overlay.get(addrKey(addr))
     const bal = ovl?.balanceSet ? ovl.balance : await this.fetcher.getBalance(addr)
     return makeResult(id, toQuantity(bal))
@@ -450,7 +450,7 @@ export class EvmSandbox {
   private async rpcGetNonce(id: RpcRequest['id'], params: unknown[]): Promise<RpcResponse | null> {
     const addr = asAddr(params[0])
     if (!addr) return makeError(id, ERR_INVALID_PARAMS, 'invalid address')
-    if (await this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
+    if (this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
     const ovl = this.overlay.get(addrKey(addr))
     const n = ovl?.nonceSet ? ovl.nonce : await this.fetcher.getNonce(addr)
     return makeResult(id, toQuantity(n))
@@ -459,7 +459,7 @@ export class EvmSandbox {
   private async rpcGetCode(id: RpcRequest['id'], params: unknown[]): Promise<RpcResponse | null> {
     const addr = asAddr(params[0])
     if (!addr) return makeError(id, ERR_INVALID_PARAMS, 'invalid address')
-    if (await this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
+    if (this.isHistoricalBlock(params[1])) return null // read the real chain @ that block
     const ovl = this.overlay.get(addrKey(addr))
     const code = ovl?.codeSet ? ovl.code : await this.fetcher.getCode(addr)
     return makeResult(id, bytesToHex(code))
@@ -468,7 +468,7 @@ export class EvmSandbox {
   private async rpcGetStorageAt(id: RpcRequest['id'], params: unknown[]): Promise<RpcResponse | null> {
     const addr = asAddr(params[0])
     if (!addr || typeof params[1] !== 'string') return makeError(id, ERR_INVALID_PARAMS, 'invalid params')
-    if (await this.isHistoricalBlock(params[2])) return null // read the real chain @ that block
+    if (this.isHistoricalBlock(params[2])) return null // read the real chain @ that block
     const slot = toHash32Hex(params[1])
     const ovl = this.overlay.get(addrKey(addr))
     const have = ovl?.storage.get(slot)
@@ -479,26 +479,20 @@ export class EvmSandbox {
   /**
    * Whether a state read at `tag` should reflect a concrete historical block on
    * the real chain (overlay off) rather than the sandbox tip. Named tags decide
-   * without a round-trip; a numeric block is historical only when strictly below
-   * the current upstream tip (getLatestBlock is TTL-cached, so this rarely costs
-   * a subrequest). Returning true routes the caller to the upstream passthrough,
-   * which forwards the original block tag verbatim.
+   * on their own; a numeric block is historical only when it predates the first
+   * sandbox tx (see isHistoricalBlockTag) — NOT when it sits below the moving
+   * upstream tip, which is where every wallet read pinned by a block tracker
+   * lands on a fast chain. Returning true routes the caller to the upstream
+   * passthrough, which forwards the original block tag verbatim.
    */
-  private async isHistoricalBlock(tag: unknown): Promise<boolean> {
-    const c = classifyBlockTag(tag)
-    if (c.kind !== 'number') return c.kind === 'historical'
-    try {
-      const tip = await this.fetcher.getLatestBlock()
-      return c.number < tip.number
-    } catch {
-      return false // tip unavailable → answer from the sandbox tip, never misroute
-    }
+  private isHistoricalBlock(tag: unknown): boolean {
+    return isHistoricalBlockTag(tag, this.sandbox.firstBlockNumber())
   }
 
   // --- eth_call / eth_estimateGas ----------------------------------------
 
   private async rpcCall(req: RpcRequest, params: unknown[]): Promise<RpcResponse | null> {
-    if (await this.isHistoricalBlock(params[1])) return null // historical read → upstream, overlay off
+    if (this.isHistoricalBlock(params[1])) return null // historical read → upstream, overlay off
     if (this.cfg.ethCallStorageMode === 'stateOverride') {
       return this.forwardWithOverlayOverrides(req, params, 'eth_call')
     }
@@ -519,7 +513,7 @@ export class EvmSandbox {
   }
 
   private async rpcEstimateGas(req: RpcRequest, params: unknown[]): Promise<RpcResponse | null> {
-    if (await this.isHistoricalBlock(params[1])) return null // historical read → upstream, overlay off
+    if (this.isHistoricalBlock(params[1])) return null // historical read → upstream, overlay off
     if (this.cfg.ethCallStorageMode === 'stateOverride') {
       return this.forwardWithOverlayOverrides(req, params, 'eth_estimateGas')
     }

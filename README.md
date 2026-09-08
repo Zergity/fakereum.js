@@ -122,13 +122,18 @@ reads that carry a block parameter (`eth_call`, `eth_estimateGas`,
 honor it with fork semantics:
 
 - `latest` / `pending` / `safe` / `finalized` (or omitted), and any block
-  number at or above the current tip → the **sandbox tip** (overlay applied), so
-  a read pinned to the block a just-sent tx landed in still sees it.
-- A concrete past block — a number **below** the tip, a block **hash**, or
-  `earliest` (the EIP-1898 object form is accepted too) → the **real chain** at
-  that block, overlay off. Historical blocks predate every sandbox mutation, so
-  they pass straight through to upstream. Only the numeric case consults the
-  (TTL-cached) tip; named tags never cost a subrequest.
+  number at or after the block the **first sandbox tx** landed in → the
+  **sandbox tip** (overlay applied). While the sandbox holds no tx, every numeric
+  block reads the tip too. This is deliberate: wallets never send `latest` —
+  MetaMask rewrites it into the block its tracker last saw — and on a chain
+  minting a block every few hundred ms the real tip is already past that number
+  when the request lands. Comparing against the tip would send every wallet read
+  upstream with the overlay off, hiding sandbox balances and deployments.
+- A concrete past block — a number **below** the first sandbox tx's block, a
+  block **hash**, or `earliest` (the EIP-1898 object form is accepted too) → the
+  **real chain** at that block, overlay off. Such blocks predate every sandbox
+  mutation, so they pass straight through to upstream. No block-tag decision
+  costs a subrequest.
 
 ## Status & known limitations
 

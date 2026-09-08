@@ -5,9 +5,9 @@
 // The sandbox keeps one sticky overlay layered on upstream@latest: the "sandbox
 // tip". A state read either reflects that tip (overlay on) or a concrete
 // historical block on the real chain (overlay off, forwarded upstream verbatim).
-// Named tags decide this on their own; a numeric block needs the current tip —
-// it is historical only when strictly below it, so the overlay still answers a
-// read pinned to the block a just-sent sandbox tx landed in.
+// Named tags decide this on their own; a numeric block is compared against the
+// block the overlay CAME INTO EXISTENCE (the first sandbox tx), never against the
+// moving real tip — see isHistoricalBlockTag.
 
 import { toBigInt } from './hex'
 
@@ -18,7 +18,7 @@ export type BlockTagClass =
 
 /**
  * First-pass classification that needs no upstream call. A `number` result must
- * still be compared against the current tip (numeric < tip ⇒ historical).
+ * still be compared against the overlay's first block (isHistoricalBlockTag).
  *
  * Accepts the plain string form and the EIP-1898 object form
  * ({ blockNumber } / { blockHash }).
@@ -44,6 +44,27 @@ export function classifyBlockTag(tag: unknown): BlockTagClass {
   }
   if (/^0x[0-9a-f]{64}$/i.test(tag)) return { kind: 'historical' } // 32-byte block hash
   return numeric(tag)
+}
+
+/**
+ * Whether a state read at `tag` reflects a concrete historical block on the real
+ * chain (overlay off) rather than the sandbox tip.
+ *
+ * `overlayStart` is the block the FIRST sandbox transaction landed in, or
+ * undefined while the sandbox holds no tx. The overlay did not exist before that
+ * block, so a numeric tag is historical only when strictly below it. Everything
+ * at or after it reads the overlay — including a block number the real tip has
+ * already moved past. That case is the norm, not the exception: MetaMask's
+ * block-ref middleware rewrites `latest` into the block its tracker last saw,
+ * and on a chain minting a block every few hundred ms the upstream tip is ahead
+ * of that number by the time the request lands. Comparing against the tip (the
+ * old rule) sent every wallet read upstream with the overlay off, so sandbox
+ * balances and deployments were invisible to wallets. Pure: no upstream call.
+ */
+export function isHistoricalBlockTag(tag: unknown, overlayStart: bigint | undefined): boolean {
+  const c = classifyBlockTag(tag)
+  if (c.kind !== 'number') return c.kind === 'historical'
+  return overlayStart !== undefined && c.number < overlayStart
 }
 
 function numeric(v: string): BlockTagClass {
