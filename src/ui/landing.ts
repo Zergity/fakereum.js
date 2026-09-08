@@ -38,10 +38,10 @@ function jsString(s: string): string {
       case '\r':
         out += '\\r'
         break
-      case '':
+      case '\u2028':
         out += '\\u2028'
         break
-      case '':
+      case '\u2029':
         out += '\\u2029'
         break
       // Defensively escape characters that could prematurely close the
