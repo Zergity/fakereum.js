@@ -7,6 +7,12 @@ const ANKR_UNAUTHORIZED = {
   code: -32000,
   message: 'Unauthorized: You must authenticate your request with an API key.',
 }
+// publicnode's free tier, eth_getLogs without an address filter (HTTP 200 body).
+const PUBLICNODE_ADDRESS_REQUIRED = {
+  code: -32701,
+  message:
+    'Please specify an address in your request or, to remove restrictions, order a dedicated full node here: https://www.allnodes.com/publicnode',
+}
 
 describe('isMethodUnsupportedError', () => {
   it('matches provider method refusals', () => {
@@ -16,6 +22,12 @@ describe('isMethodUnsupportedError', () => {
       isMethodUnsupportedError({ code: -32000, message: 'the method eth_getProof does not exist/is not available' }),
     ).toBe(true)
     expect(isMethodUnsupportedError({ code: -32000, message: 'Method debug_traceCall is not allowed' })).toBe(true)
+  })
+  it('matches publicnode refusing eth_getLogs without an address filter', () => {
+    expect(isMethodUnsupportedError(PUBLICNODE_ADDRESS_REQUIRED)).toBe(true)
+    expect(isMethodUnsupportedError({ code: -32000, message: 'Please specify an address in your request' })).toBe(true)
+    // Not a limit: that class would bench the URL for every method.
+    expect(isProviderLimitError(PUBLICNODE_ADDRESS_REQUIRED)).toBe(false)
   })
   it('does not match real chain answers', () => {
     expect(isMethodUnsupportedError({ code: -32000, message: 'execution reverted' })).toBe(false)
@@ -115,5 +127,19 @@ describe('Upstream failover', () => {
     const r = await up.call('eth_call', [{}, 'latest', {}])
     expect(r.error?.message).toBe('execution reverted')
     expect(hits).toEqual(['https://a']) // no failover on a genuine chain answer
+  })
+  it("fails over past publicnode's address-required eth_getLogs refusal", async () => {
+    const hits: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      if (url === 'https://publicnode') {
+        return jsonResponse({ jsonrpc: '2.0', id: 1, error: PUBLICNODE_ADDRESS_REQUIRED })
+      }
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: [] })
+    })
+    const up = new Upstream(['https://publicnode', 'https://ordofi'])
+    const r = await up.call('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x2', topics: [] }])
+    expect(r.result).toEqual([])
+    expect(hits).toEqual(['https://publicnode', 'https://ordofi'])
   })
 })

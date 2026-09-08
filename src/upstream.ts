@@ -59,13 +59,24 @@ export function isProviderLimitError(
  * That is provider policy, not the chain's answer: fail over to the next URL.
  * Only if every URL refuses is the refusal returned as the real answer (a
  * passthrough method like debug_* may genuinely not exist anywhere).
+ *
+ * Also covers a provider refusing a request SHAPE on policy grounds:
+ * publicnode's free tier answers eth_getLogs without an address filter with
+ * HTTP 200 + non-standard -32701 "Please specify an address in your request
+ * or, to remove restrictions, order a dedicated full node". That used to be
+ * returned to the caller as the chain's answer whenever the URLs ahead of it
+ * were benched. It lands here (per-method skip) rather than in
+ * isProviderLimitError, whose 30s bench would take the URL out for every
+ * method although it still serves eth_call & co. fine.
  */
 export function isMethodUnsupportedError(
   e: { code?: number; message?: string } | undefined | null,
 ): boolean {
   if (!e) return false
   if (e.code === -32601) return true // official "method not found"
+  if (e.code === -32701) return true // publicnode: request shape refused by policy
   const m = (e.message ?? '').toLowerCase()
+  if (/specify an address|dedicated (full )?node/.test(m)) return true
   return /\bmethod\b.{0,60}\b(not supported|unsupported|not available|not allowed|not enabled|disabled|does not exist|not found|not whitelisted)/.test(
     m,
   )
