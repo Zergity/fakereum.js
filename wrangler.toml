@@ -159,17 +159,26 @@ name = "EVM_SANDBOX"
 class_name = "EvmSandbox"
 
 # Endpoint notes:
+# eth_getLogs is the weak spot on this chain. The official endpoint serves it
+# generously from an ordinary IP but answers HTTP 429 from Cloudflare's shared
+# egress IPs; publicnode's free tier refuses it without an address filter
+# (-32701 "Please specify an address...") and calls anything beyond ~100 blocks
+# back an "archive request" (HTTP 403). rpc.ordofi.network (listed on
+# chainid.network) serves multi-hundred-block eth_getLogs ranges and accepts
+# the 3-param eth_call-with-stateOverrides shape; very wide ranges answer
+# -32005 "the network is busy" (failed over). It sits ahead of publicnode so a
+# 429 from the official endpoint lands on a URL that can actually answer.
 # robinhood.drpc.org was dropped: its free tier refuses eth_call outright
 # (-32601 "method does not exist"), so every routed call wastes a subrequest
-# before failing over. rpc.arrowrpc.com (listed on chainid.network) was dead at
-# deploy time (Cloudflare error 1033).
+# before failing over; it has no eth_getLogs either. rpc.arrowrpc.com (listed
+# on chainid.network) was dead at deploy time and still is (Cloudflare 1033).
 # Explorer: Etherscan v2 does NOT cover chain 4663, so UPSTREAM_ETHERSCAN
 # points at the chain's Blockscout Etherscan-compat endpoint (style sniffed
 # from the URL: decimal getLogs blocks, no apikey). Blockscout rate-limits
 # anonymous requests from CF shared egress IPs, so callers may need to pass
 # their own Blockscout apikey (passed through as-is).
 [env.4663.vars]
-UPSTREAM_RPC = "https://rpc.mainnet.chain.robinhood.com,https://robinhood-rpc.publicnode.com"
+UPSTREAM_RPC = "https://rpc.mainnet.chain.robinhood.com,https://rpc.ordofi.network,https://robinhood-rpc.publicnode.com"
 UPSTREAM_ETHERSCAN = "https://robinhoodchain.blockscout.com/api"
 CHAIN_ID = "4663"
 SYMBOL = "FETH"
