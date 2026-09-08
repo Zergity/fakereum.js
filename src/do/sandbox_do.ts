@@ -662,12 +662,11 @@ export class EvmSandbox {
     // source, tests) — never injected into proxied traffic. Blockscout-style
     // upstreams take no API key, so the gate only applies to Etherscan proper.
     if (this.cfg.etherscanStyle === 'etherscan' && !params.get('apikey')) {
-      return jsonResponse({
-        status: '0',
-        message: 'NOTOK',
-        result:
+      return jsonResponse(
+        etherscanNotOk(
           'Missing apikey: supply your own Etherscan API key (apikey=…); it is passed through to the upstream explorer',
-      })
+        ),
+      )
     }
     const swap = (a: Hex): Hex => this.impersonators.swap(a)
     const rewritten = rewriteEtherscanParams(params, {
@@ -681,10 +680,9 @@ export class EvmSandbox {
       const target = this.cfg.upstreamEtherscan + '?' + rewritten.toString()
       let upstreamJson: unknown
       try {
-        const r = await fetch(target, { headers: EXPLORER_HEADERS })
-        upstreamJson = await r.json()
+        upstreamJson = await this.fetchExplorerJson(target)
       } catch (e) {
-        return new Response('upstream: ' + String(e), { status: 502 })
+        return jsonResponse(etherscanNotOk('upstream: ' + String((e as Error).message ?? e)))
       }
       const filter = parseLogFilter([etherscanFilterObj(params)])
       const sandboxRecords = this.sandbox.filterLogs(filter).map((l) => {
@@ -709,11 +707,27 @@ export class EvmSandbox {
     // carried through unchanged.
     const target = this.cfg.upstreamEtherscan + '?' + rewritten.toString()
     try {
-      const r = await fetch(target, { method: request.method, headers: EXPLORER_HEADERS })
-      const body = await r.json()
+      const body = await this.fetchExplorerJson(target, request.method)
       return jsonResponse(this.reverseEtherscanBody(body))
     } catch (e) {
-      return new Response('upstream: ' + String(e), { status: 502 })
+      return jsonResponse(etherscanNotOk('upstream: ' + String((e as Error).message ?? e)))
+    }
+  }
+
+  /**
+   * Fetch the upstream explorer and parse its JSON. Throws a descriptive Error
+   * on transport failure or a non-JSON body (an HTML challenge or error page),
+   * naming the HTTP status and content type instead of the parser's
+   * "Unexpected token '<'".
+   */
+  private async fetchExplorerJson(target: string, method = 'GET'): Promise<unknown> {
+    const r = await fetch(target, { method, headers: EXPLORER_HEADERS })
+    const text = await r.text()
+    try {
+      return JSON.parse(text)
+    } catch {
+      const ct = r.headers.get('content-type') ?? 'no content-type'
+      throw new Error(`explorer returned non-JSON (HTTP ${r.status}, ${ct})`)
     }
   }
 
@@ -955,6 +969,17 @@ const EXPLORER_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
   Accept: 'application/json',
+}
+
+/**
+ * Etherscan-style failure envelope. Upstream failures are reported this way
+ * (HTTP 200) rather than as HTTP 502: Etherscan clients already treat
+ * status "0" / NOTOK as an error, whereas on a custom domain Cloudflare
+ * replaces an origin 502 body with its own bare "error code: 502", hiding the
+ * diagnostic — which is exactly how the Blockscout challenge surfaced.
+ */
+function etherscanNotOk(result: string): { status: '0'; message: 'NOTOK'; result: string } {
+  return { status: '0', message: 'NOTOK', result }
 }
 
 function jsonResponse(body: unknown): Response {
