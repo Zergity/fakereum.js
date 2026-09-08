@@ -681,7 +681,7 @@ export class EvmSandbox {
       const target = this.cfg.upstreamEtherscan + '?' + rewritten.toString()
       let upstreamJson: unknown
       try {
-        const r = await fetch(target)
+        const r = await fetch(target, { headers: EXPLORER_HEADERS })
         upstreamJson = await r.json()
       } catch (e) {
         return new Response('upstream: ' + String(e), { status: 502 })
@@ -709,7 +709,7 @@ export class EvmSandbox {
     // carried through unchanged.
     const target = this.cfg.upstreamEtherscan + '?' + rewritten.toString()
     try {
-      const r = await fetch(target, { method: request.method })
+      const r = await fetch(target, { method: request.method, headers: EXPLORER_HEADERS })
       const body = await r.json()
       return jsonResponse(this.reverseEtherscanBody(body))
     } catch (e) {
@@ -943,6 +943,19 @@ export class EvmSandbox {
 }
 
 // --- module helpers -------------------------------------------------------
+
+// Request headers for the upstream explorer. Blockscout instances sit behind a
+// Cloudflare managed challenge keyed on the User-Agent: a bare Workers fetch()
+// (no browser-like UA) is answered with an HTML "Just a moment..." challenge
+// page instead of JSON, which used to surface here as a 502 on every proxied
+// call (observed on robinhoodchain.blockscout.com, 2026-09). A desktop-browser
+// UA passes the challenge; an apikey parameter alone does not. Etherscan
+// proper does not care either way.
+const EXPLORER_HEADERS: Record<string, string> = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  Accept: 'application/json',
+}
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
