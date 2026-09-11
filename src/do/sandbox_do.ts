@@ -194,10 +194,13 @@ export class EvmSandbox {
   }
 
   /**
-   * Round-robin one of the server's configured Etherscan keys. Reserved for
+   * Round-robin one of the server's configured explorer keys. Used for
    * Worker-internal limited queries (contract ABI / verified-source lookups,
-   * tests) — NOT used by the public /api proxy, which requires and passes
-   * through the caller's own key. Returns undefined when none configured.
+   * tests) and, on a Blockscout upstream, as the fallback key for proxied /api
+   * traffic — that upstream's PRO gateway serves nobody without one, and the
+   * caller's own apikey still wins when supplied. An Etherscan upstream never
+   * gets it: there the caller must bring their own key. Undefined when none
+   * configured.
    */
   private nextEtherscanKey(): string | undefined {
     const keys = this.cfg.etherscanKeys
@@ -656,12 +659,15 @@ export class EvmSandbox {
 
   private async serveEtherscan(request: Request, url: URL): Promise<Response> {
     const params = new URLSearchParams(url.search)
-    // The public proxy requires the CALLER's own Etherscan API key and passes
-    // it straight through. The server's configured key (nextEtherscanKey) is
-    // reserved for Worker-internal limited queries (contract ABI / verified
-    // source, tests) — never injected into proxied traffic. Blockscout-style
-    // upstreams take no API key, so the gate only applies to Etherscan proper.
-    if (this.cfg.etherscanStyle === 'etherscan' && !params.get('apikey')) {
+    // On an Etherscan upstream the proxy requires the CALLER's own key and passes
+    // it straight through, so public traffic never spends the operator's quota.
+    // A Blockscout upstream is the other way round: a single-chain instance takes
+    // no key at all, while the multichain PRO gateway REFUSES every anonymous
+    // request (HTTP 402 "Proceed with API key"), so configuring one is the
+    // operator electing to fund the traffic — inject the configured key there,
+    // still behind a caller-supplied apikey when there is one.
+    const blockscout = this.cfg.etherscanStyle === 'blockscout'
+    if (!blockscout && !params.get('apikey')) {
       return jsonResponse(
         etherscanNotOk(
           'Missing apikey: supply your own Etherscan API key (apikey=…); it is passed through to the upstream explorer',
@@ -672,7 +678,9 @@ export class EvmSandbox {
     const rewritten = rewriteEtherscanParams(params, {
       upstreamChainId: this.cfg.upstreamChainId,
       swap,
-      blockFormat: this.cfg.etherscanStyle === 'blockscout' ? 'decimal' : 'hex',
+      blockFormat: blockscout ? 'decimal' : 'hex',
+      chainParam: blockscout ? 'chain_id' : 'chainid',
+      apiKey: blockscout ? this.nextEtherscanKey() : undefined,
     })
 
     if (isGetLogs(rewritten)) {
@@ -682,7 +690,11 @@ export class EvmSandbox {
       try {
         upstreamJson = await this.fetchExplorerJson(target)
       } catch (e) {
-        return jsonResponse(etherscanNotOk('upstream: ' + String((e as Error).message ?? e)))
+        // Don't bail: a transport failure or a challenge page says nothing about
+        // the SANDBOX's logs, which live only here. Shape it like an upstream
+        // NOTOK and let mergeGetLogsResult decide — it answers with the sandbox
+        // half when there is one, and passes this through when there isn't.
+        upstreamJson = etherscanNotOk('upstream: ' + String((e as Error).message ?? e))
       }
       const filter = parseLogFilter([etherscanFilterObj(params)])
       const sandboxRecords = this.sandbox.filterLogs(filter).map((l) => {
@@ -716,12 +728,32 @@ export class EvmSandbox {
 
   /**
    * Fetch the upstream explorer and parse its JSON. Throws a descriptive Error
-   * on transport failure or a non-JSON body (an HTML challenge or error page),
-   * naming the HTTP status and content type instead of the parser's
-   * "Unexpected token '<'".
+   * on transport failure, timeout, or a non-JSON body (an HTML challenge or
+   * error page), naming the HTTP status and content type instead of the
+   * parser's "Unexpected token '<'".
+   *
+   * The wait is bounded (EXPLORER_TIMEOUT_MS). A query the explorer cannot
+   * serve does not fail fast: Blockscout's gateway sat on an address-less
+   * full-range getLogs for 51 s before answering "Internal server error"
+   * (Robinhood Chain, 2026-09), where a healthy call — 1000 logs spanning the
+   * chain's whole history — returns in ~2.5 s. For getLogs that wait also
+   * delays sandbox logs that were ready immediately, so cut it short and let
+   * the caller answer with the half it has.
    */
   private async fetchExplorerJson(target: string, method = 'GET'): Promise<unknown> {
-    const r = await fetch(target, { method, headers: EXPLORER_HEADERS })
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), EXPLORER_TIMEOUT_MS)
+    let r: Response
+    try {
+      r = await fetch(target, { method, headers: EXPLORER_HEADERS, signal: abort.signal })
+    } catch (e) {
+      if (abort.signal.aborted) {
+        throw new Error(`explorer did not answer within ${EXPLORER_TIMEOUT_MS / 1000}s`)
+      }
+      throw e
+    } finally {
+      clearTimeout(timer)
+    }
     const text = await r.text()
     try {
       return JSON.parse(text)
@@ -965,6 +997,9 @@ export class EvmSandbox {
 // call (observed on robinhoodchain.blockscout.com, 2026-09). A desktop-browser
 // UA passes the challenge; an apikey parameter alone does not. Etherscan
 // proper does not care either way.
+/** Upper bound on one upstream explorer call — see fetchExplorerJson. */
+const EXPLORER_TIMEOUT_MS = 20_000
+
 const EXPLORER_HEADERS: Record<string, string> = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',

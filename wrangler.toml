@@ -172,14 +172,20 @@ class_name = "EvmSandbox"
 # (-32601 "method does not exist"), so every routed call wastes a subrequest
 # before failing over; it has no eth_getLogs either. rpc.arrowrpc.com (listed
 # on chainid.network) was dead at deploy time and still is (Cloudflare 1033).
-# Explorer: Etherscan v2 does NOT cover chain 4663, so UPSTREAM_ETHERSCAN
-# points at the chain's Blockscout Etherscan-compat endpoint (style sniffed
-# from the URL: decimal getLogs blocks, no apikey). Blockscout rate-limits
-# anonymous requests from CF shared egress IPs, so callers may need to pass
-# their own Blockscout apikey (passed through as-is).
+# Explorer: Etherscan v2 does NOT cover chain 4663. The chain's own Blockscout
+# host (robinhoodchain.blockscout.com) is no longer usable either — as of
+# 2026-09-11 it answers EVERY programmatic caller with a Cloudflare managed
+# challenge (HTTP 403, cf-mitigated: challenge) that a browser User-Agent no
+# longer passes, and it sends no CORS header, so browsers fail too. So
+# UPSTREAM_ETHERSCAN points at Blockscout's multichain PRO gateway, which is
+# challenge-free and serves 4663: it needs chain_id (set from the upstream
+# chain id) and an ETHERSCAN_API_KEY secret (proapi_… from the Blockscout
+# developer portal) — anonymous requests get HTTP 402. Style is sniffed from
+# the URL as blockscout: decimal getLogs blocks, and the topicI_J_opr closure
+# this gateway insists on is filled in by completeTopicOperators.
 [env.4663.vars]
 UPSTREAM_RPC = "https://rpc.mainnet.chain.robinhood.com,https://rpc.ordofi.network,https://robinhood-rpc.publicnode.com"
-UPSTREAM_ETHERSCAN = "https://robinhoodchain.blockscout.com/api"
+UPSTREAM_ETHERSCAN = "https://api.blockscout.com/v2/api"
 CHAIN_ID = "4663"
 SYMBOL = "FETH"
 NETWORK_NAME = "Fake Robinhood Chain"

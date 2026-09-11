@@ -86,8 +86,8 @@ mirror the Go flags:
 | var | meaning | default |
 |---|---|---|
 | `UPSTREAM_RPC` | upstream JSON-RPC URL(s), comma-separated for failover (`ws(s)://` is rewritten to `http(s)://`) | `https://ethereum-rpc.publicnode.com` |
-| `UPSTREAM_ETHERSCAN` | upstream Etherscan v2 base | `https://api.etherscan.io/v2/api` |
-| `ETHERSCAN_API_KEY` *(secret)* | comma-separated keys; round-robin + rate-limit retry | (none) |
+| `UPSTREAM_ETHERSCAN` | upstream explorer base — Etherscan v2, a single-chain Blockscout, or Blockscout's multichain PRO gateway `https://api.blockscout.com/v2/api` (a URL containing `blockscout` switches to decimal getLogs blocks + the `chain_id` param) | `https://api.etherscan.io/v2/api` |
+| `ETHERSCAN_API_KEY` *(secret)* | comma-separated keys; round-robin + rate-limit retry. On an Etherscan upstream it is internal-only and callers must bring their own `apikey`; on a Blockscout upstream it is also the fallback key for proxied `/api` traffic, since the PRO gateway refuses anonymous requests (HTTP 402) | (none) |
 | `CHAIN_ID` | sandbox chain id; `0` = derive `420<upstreamId>` | `0` |
 | `SYMBOL` / `NETWORK_NAME` | native symbol / network name | `F<sym>` / `Fake <name>` |
 | `ETH_CALL_STORAGE_MODE` | `stateOverride` (Free-safe) or `getStorageAt` | `stateOverride` |
@@ -105,7 +105,7 @@ mirror the Go flags:
 |---|---|
 | `GET /` | landing page (`Add to wallet`) |
 | `POST /rpc` (+ WS upgrade) | JSON-RPC; WebSocket `eth_subscribe` (newHeads/logs, sandbox-driven) |
-| `/api`, `/v2/api` | Etherscan v2 proxy (sandbox getLogs merge, key rotation) |
+| `/api`, `/v2/api` | Etherscan v2 proxy (sandbox getLogs merge — sandbox-only logs still answer when the upstream explorer is down — plus key rotation) |
 | `/tx/<hash>` · `/address/<addr>` | HTML explorer |
 | `/txs` · `/accounts` | list pages |
 | `POST /undo/{last\|<hash>}` | LIFO undo |

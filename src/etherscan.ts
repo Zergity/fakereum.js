@@ -139,12 +139,20 @@ export interface RewriteEtherscanOpts {
    * v2, default) or 'decimal' (Blockscout's Etherscan-compat endpoint).
    */
   blockFormat?: 'hex' | 'decimal'
+  /**
+   * Query param that names the chain: 'chainid' (Etherscan v2, default) or
+   * 'chain_id' (Blockscout's multichain PRO gateway, api.blockscout.com/v2/api,
+   * which answers "Unknown module" style errors without it). A single-chain
+   * explorer ignores either.
+   */
+  chainParam?: 'chainid' | 'chain_id'
 }
 
 /**
  * Return a NEW URLSearchParams forwarded upstream:
- *  - chainid forced to opts.upstreamChainId (decimal). The dapp parrots back
- *    fakereum's sandbox chain id, but upstream needs the real one to index logs.
+ *  - the chain param (chainid, or chain_id for Blockscout's PRO gateway) forced
+ *    to opts.upstreamChainId (decimal). The dapp parrots back fakereum's sandbox
+ *    chain id, but upstream needs the real one to index logs.
  *  - apikey injected when absent (and opts.apiKey set).
  *  - For module=logs&action=getLogs: address= (incl. comma-separated) and
  *    topic0..topic3 rewritten B->A via opts.swap, and fromBlock/toBlock
@@ -174,9 +182,10 @@ export function rewriteEtherscanParams(
     normalizeGetLogsBlocks(out, opts.blockFormat ?? 'hex')
   }
 
-  // chainid is ALWAYS forced to the upstream chain id.
+  // The chain is ALWAYS forced to the upstream chain id: the dapp parrots back
+  // fakereum's sandbox id, which no explorer indexes.
   if (opts.upstreamChainId !== 0n) {
-    out.set('chainid', opts.upstreamChainId.toString(10))
+    out.set(opts.chainParam ?? 'chainid', opts.upstreamChainId.toString(10))
   }
   // Inject apikey only when the caller didn't already provide one.
   if (opts.apiKey && !out.get('apikey')) {
@@ -316,9 +325,17 @@ interface EtherscanEnvelope {
 /**
  * Merge upstream getLogs JSON with sandbox-derived records.
  *
- *  - If upstream is NOTOK/error (result is not an array — i.e. a text message),
- *    return the upstream JSON verbatim so the caller sees the real failure
- *    rather than a silent sandbox-only substitution.
+ *  - If upstream is NOTOK/error (result is not an array — i.e. a text message)
+ *    and the sandbox has nothing of its own, return the upstream JSON verbatim
+ *    so the caller sees the real failure.
+ *  - If upstream failed but the sandbox DID match logs, answer with those. A
+ *    fork-only log exists in no explorer index anywhere, so discarding it
+ *    because the upstream half of the range is unavailable loses the only copy
+ *    — and clients read a NOTOK as "no history" (an account's whole position
+ *    history vanishing on a dapp, observed on Robinhood Chain 2026-09, whose
+ *    explorer answers every non-browser caller with a Cloudflare challenge).
+ *    The envelope says so: `message` is OK-prefixed so Etherscan clients accept
+ *    it, and carries the upstream failure so partial coverage stays visible.
  *  - Otherwise client-side filter upstream entries to [fromBlock, toBlock]
  *    (defensive: Etherscan v2 sometimes returns out-of-range blocks), append
  *    the sandbox records, stable-sort by (blockNumber, logIndex) only when the
@@ -334,9 +351,15 @@ export function mergeGetLogsResult(
   const upstreamResult = env.result
 
   // NOTOK / error: upstream "result" is a text string (or otherwise not an
-  // array). Pass the payload through verbatim.
+  // array). Pass the payload through verbatim — unless the sandbox can still
+  // answer, in which case its own logs beat an error that would read as "none".
   if (!Array.isArray(upstreamResult)) {
-    return upstreamJson
+    if (sandboxRecords.length === 0) return upstreamJson
+    return {
+      status: '1',
+      message: 'OK (sandbox only, upstream unavailable: ' + describeFailure(env) + ')',
+      result: sortByBlockAndIndex(sandboxRecords),
+    }
   }
 
   let entries = upstreamResult as Array<Record<string, unknown>>
@@ -352,21 +375,36 @@ export function mergeGetLogsResult(
   // Re-sort only when sandbox actually contributed; otherwise upstream's order
   // stands (stable sort preserves the relative order of equal keys).
   if (sandboxStart > 0 && entries.length > sandboxStart) {
-    entries = stableSort(entries, (a, b) => {
-      const ba = hexUint(a['blockNumber'])
-      const bb = hexUint(b['blockNumber'])
-      if (ba !== bb) return ba < bb ? -1 : 1
-      const la = hexUint(a['logIndex'])
-      const lb = hexUint(b['logIndex'])
-      if (la === lb) return 0
-      return la < lb ? -1 : 1
-    })
+    entries = sortByBlockAndIndex(entries)
   }
 
   if (entries.length === 0) {
     return { status: '0', message: 'No records found', result: [] }
   }
   return { status: '1', message: 'OK', result: entries }
+}
+
+/** Chronological (blockNumber, logIndex) order — the order clients replay in. */
+function sortByBlockAndIndex(
+  entries: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return stableSort(entries, (a, b) => {
+    const ba = hexUint(a['blockNumber'])
+    const bb = hexUint(b['blockNumber'])
+    if (ba !== bb) return ba < bb ? -1 : 1
+    const la = hexUint(a['logIndex'])
+    const lb = hexUint(b['logIndex'])
+    if (la === lb) return 0
+    return la < lb ? -1 : 1
+  })
+}
+
+/** One-line reason from a failed upstream envelope, for the partial-answer message. */
+function describeFailure(env: EtherscanEnvelope): string {
+  const result = typeof env.result === 'string' ? env.result.trim() : ''
+  const message = typeof env.message === 'string' ? env.message.trim() : ''
+  const text = result || message || 'no result'
+  return text.length > 200 ? text.slice(0, 197) + '...' : text
 }
 
 /**

@@ -21,5 +21,10 @@ GENESIS={"alloc":{"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266":{"balance":"0xd3c
 # CORS origin allowlist (comma-separated). Empty/unset = "*".
 CORS_ORIGINS=
 
-# Etherscan v2 API key(s), comma-separated for round-robin rotation.
+# Explorer API key(s), comma-separated for round-robin rotation.
+#   - Etherscan v2 upstream: internal use only (callers pass their own apikey).
+#   - Blockscout upstream: ALSO used for proxied /api traffic. The multichain PRO
+#     gateway (https://api.blockscout.com/v2/api) refuses anonymous requests with
+#     HTTP 402, so a `proapi_…` key from the Blockscout developer portal is
+#     required there — and public proxy traffic then spends this key's quota.
 ETHERSCAN_API_KEY=
