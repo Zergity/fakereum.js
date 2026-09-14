@@ -63,6 +63,9 @@ export function renderTx(tx: StoredTx): Record<string, unknown> {
   if (tx.signedBy && tx.signedBy.toLowerCase() !== tx.from.toLowerCase()) {
     out['signedBy'] = checksumAddress(tx.signedBy)
   }
+  // A message tx's v/r/s above are the EIP-191 signature over this text, not
+  // over the tx; carry the text so a client can re-verify the sender.
+  if (tx.signedMessage) out['signedMessage'] = tx.signedMessage
   return out
 }
 
@@ -83,6 +86,7 @@ export function renderReceipt(tx: StoredTx): Record<string, unknown> {
     contractAddress: tx.contractAddress ? checksumAddress(tx.contractAddress) : null,
     type: '0x2',
   }
+  if (tx.signedMessage) out['signedMessage'] = tx.signedMessage
   if (tx.signedBy && tx.signedBy.toLowerCase() !== tx.from.toLowerCase()) {
     out['signedBy'] = checksumAddress(tx.signedBy)
   }

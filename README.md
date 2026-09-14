@@ -112,7 +112,122 @@ mirror the Go flags:
 | `/admin` | impersonation + clear-sandbox tools (EIP-712, admin-gated) |
 
 Discovery: `eth_call` to `0x…fa4e` returns the ABI-encoded sandbox info string
-(same sentinel as the Go version).
+(same sentinel as the Go version), now also carrying `upstreamRpc`, the primary
+upstream URL, so a dapp can check an account's real-chain balance.
+
+### Signed-message transactions (EIP-191)
+
+A transaction can also arrive as a `personal_sign` message instead of signed
+RLP. The signature binds the nonce, recipient, value and calldata; gas limit
+and fee terms travel unsigned in the RPC params (this is a test sandbox, and
+nothing harmful can be done with them without the binding signature). The
+sandbox then executes a normal legacy or EIP-1559 transaction from the
+recovered signer: same nonce and balance checks, same fee accounting, same
+impersonation NAT as a raw tx. Two methods (`src/message_tx.ts`,
+`src/lib/eip191.ts`):
+
+| method | params | result |
+|---|---|---|
+| `fakereum_transactionMessage` | `[{from?, to, value?, data?, nonce?}]` | `{ message, nonce }` — the text to sign; nonce read from the sandbox when omitted (needs `from`) |
+| `fakereum_sendTransaction` | `[{to, value?, data?, nonce, gas?, gasPrice? \| maxFeePerGas?, maxPriorityFeePerGas?, signature}]` | tx hash |
+
+Fields are named and encoded as in `eth_sendTransaction` (0x-hex quantities,
+0x-hex `data`). Omitted gas terms are filled the way a wallet would: `gas`
+from the local estimate for the recovered signer, and an EIP-1559 cap at the
+upstream gas price with no tip. The text, lines joined by `\n`, no trailing
+newline:
+
+```
+Fakereum Tx #13 on <networkName>
+To: <EIP-55 address>
+Value: 0.001                                   ← only when value > 0
+Data: 0x12345678 and 68 bytes with hash 0x…    ← only when data is non-empty
+```
+
+The header carries the nonce and the sandbox's `networkName` (the discovery
+payload's), so a client can build the text offline. `Value` is in whole
+native units with at most 10 fractional digits, trailing zeros dropped, so
+the wei amount must be a multiple of 1e8 (the RPC refuses anything finer —
+the text could not express it). `Data` shows the first four bytes; when more
+follow, their count and the keccak256 of those trailing bytes.
+
+What differs from a raw tx:
+
+- **No replay guard.** A personal_sign message is not a transaction on any
+  chain, so it cannot be replayed onto the upstream even when the chain ids
+  match. Like any landed tx it pins the signer's kind (below). The impersonatee
+  guard and impersonation NAT still apply.
+- **Hash and raw bytes are those of the constructed tx.** The legacy or
+  EIP-1559 tx is built with the message signature's r/s/v in its own
+  signature fields, so it serializes and hashes like any tx; its v/r/s just
+  recover a stranger rather than the sender, which is why `from`/`signedBy`
+  (and the `signedMessage` field) are the authority. Re-sending the same
+  signed message is refused: the nonce is stale, and an identical hash
+  answers `already known`.
+- `eth_getTransactionByHash` / receipts / the `/tx/<hash>` page carry a
+  `signedMessage: {message, signature}` next to the ordinary tx fields; the
+  page shows the signed text above the raw tx.
+
+Because wallets do not relay `fakereum_*` methods, a dapp signs through the
+wallet and POSTs the two calls directly to the sandbox's `/rpc` URL, which is
+what makes this work from a wallet parked on any other chain.
+
+### Account kinds
+
+With the replay guard on, every account the sandbox meets is pinned as one of
+two kinds (`src/account_kind.ts`, stored under `account:kind:<address>`):
+
+| kind | decided by | consequence |
+|---|---|---|
+| `upstream` | native balance > 0 on the real chain at its first sandbox tx | raw txs refused by the replay guard; sends as EIP-191 signed messages |
+| `sandbox` | zero upstream balance at its first sandbox tx | ordinary wallet flows |
+
+Pinning happens on write only: the account's first transaction that lands
+(raw or signed message, reverted or not — a refused or failed send pins
+nothing) stores the verdict the guard looked up for it, which
+survives restarts and `fakereum_clearSandbox` (it is a fact about the real
+chain, not sandbox state). `fakereum_accountKind [address]` answers
+`{ address, kind, pinned, replayGuard }` and never pins; before the first tx
+it reports the live balance with `pinned: false`, afterwards the stored
+verdict with `pinned: true`. Once pinned, the replay guard stops re-reading
+balances too: a burner topped up upstream later stays `sandbox`, a real
+account that empties itself stays `upstream`. With the guard off (distinct
+chain id) nothing can replay, so the query answers `sandbox` for everyone
+without consulting upstream.
+
+### How a dapp should use it
+
+The `fakereum` skill under `.claude/skills/` carries the code; this is the
+shape. Two setups exist, differing in who knows about the fork:
+
+- **Fork-aware dapp, normal wallet.** The wallet (MetaMask, Brave, …) stays
+  on the real chain's RPC. The dapp is configured with the sandbox base URL,
+  reads its endpoints from the sentinel *on the sandbox RPC* (or hardcodes
+  them), and does every read there: balances, `eth_call`, estimates, receipts
+  on `rpc`, logs on `etherscanApi`. The wallet's provider serves only
+  `eth_requestAccounts`, `personal_sign` and, for `sandbox`-kind accounts,
+  `eth_signTypedData_v4`. `eth_sendTransaction` on it would broadcast to the
+  real chain, so every sandbox transaction travels as an EIP-191 signed
+  message (`fakereum_transactionMessage` → `personal_sign` →
+  `fakereum_sendTransaction`, POSTed to `rpc`).
+- **Wallet repointed to the sandbox** (*Add to wallet*). The dapp detects
+  this with an `eth_call` to the sentinel on the wallet's RPC and swaps its
+  endpoints. `eth_sendTransaction` through the wallet reaches the sandbox.
+
+In both, when the user sends, the dapp asks `fakereum_accountKind [address]`
+(see above) and applies:
+
+- **3a. `upstream`:** signed messages only, in either setup. Never request a
+  transaction signature or any EIP-712 typed-data signature from this account
+  while it is on the sandbox — Permit and Permit2 included — because with a
+  shared chain id those signatures replay on the real chain. The replay guard
+  refuses the account's raw transactions for the same reason, but it cannot
+  see typed-data signatures, so the dapp has to hold that line itself.
+- **3b. `sandbox`:** EIP-712 requests are fine; an empty account has nothing
+  to lose to a replay. The transaction itself goes through the signed-message
+  path in the fork-aware setup, or through the wallet's `eth_sendTransaction`
+  when the wallet is repointed. The account needs FETH inside the fork for
+  gas, and a later deposit on the real chain does not move it back to 3a.
 
 ### Block tag
 

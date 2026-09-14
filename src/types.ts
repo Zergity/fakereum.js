@@ -197,7 +197,22 @@ export interface StoredTx {
   err?: string
   /** Decoded revert reason string, if available. */
   revertReason?: string
+  /**
+   * Set when the tx arrived as an EIP-191 signed message (fakereum_sendTransaction)
+   * rather than signed RLP. `raw` then holds the tx the message describes with
+   * the message signature's r/s/v in its signature fields (so hash and RLP are
+   * real), but those fields recover a stranger — the signature covers `message`
+   * (see lib/eip191.ts), and `from`/`signedBy` are the authority on the sender.
+   */
+  signedMessage?: SignedMessage
   diff: TxDiff
+}
+
+export interface SignedMessage {
+  /** The exact text the wallet signed. */
+  message: string
+  /** 65-byte EIP-191 signature over `message`. */
+  signature: Hex
 }
 
 // --------------------------------------------------------------------------
@@ -226,6 +241,8 @@ export interface Infos {
   etherscanApi?: string
   etherscanApiV2?: string
   explorer?: string
+  /** Primary upstream JSON-RPC URL — where a dapp checks an account's real-chain balance. */
+  upstreamRpc?: string
   upstreamExplorer?: UpstreamExplorerInfo
 }
 

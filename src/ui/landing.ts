@@ -178,8 +178,22 @@ ${replayGuardSection}
   "etherscanApi":     "…/api",     // Etherscan v2 proxy
   "etherscanApiV2":   "…/v2/api",  // same proxy, /v2/api path
   "explorer":         "…",         // this explorer
+  "upstreamRpc":      "…",         // real chain's RPC — check an account's upstream balance here
   "upstreamExplorer": { "name": "…", "url": "…" }   // optional
 }</code></pre>
+
+  <div class="tag" style="margin-top:2rem">send with a signed message</div>
+  <p style="color:#7d8590">Besides <code>eth_sendRawTransaction</code>, a transaction can be submitted as a plain <code>personal_sign</code> (EIP-191) message. The signature is chain-agnostic, so the wallet can sit on any network — no sandbox chain added, no switch. The message binds nonce, recipient, value and calldata; gas limit and fee terms are passed unsigned alongside (defaulted wallet-style when omitted). The sandbox then runs a normal transaction from the signer. Ask for the text (pass <code>from</code> and the sandbox reads the nonce for you), have the wallet sign it, post fields + signature straight to <code>/rpc</code>:</p>
+  <pre><code>fakereum_transactionMessage [{ from?, to, value?, data?, nonce? }]   → { message, nonce }
+fakereum_sendTransaction    [{ to, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
+                            → tx hash
+
+Fakereum Tx #13 on ${esc(networkName)}
+To: 0x…                                   (EIP-55 checksummed)
+Value: 0.001                              (only if &gt; 0; up to 10 decimals, so wei % 1e8 == 0)
+Data: 0x12345678 and 68 bytes with hash 0x…   (only if data non-empty; tail only past 4 bytes)</code></pre>
+  <p style="color:#7d8590">Fields are named and hex-encoded as in <code>eth_sendTransaction</code>. The same signed message is accepted once — a resend answers <code>already known</code>.</p>
+  <p style="color:#7d8590">Which path an account should take is the sandbox's call: <code>fakereum_accountKind [address]</code> answers <code>{ kind: "upstream" | "sandbox", pinned }</code> — <code>upstream</code> (holds native token on the real chain) must send signed messages and must not be asked for EIP-712 signatures; <code>sandbox</code> uses the normal wallet flows. The verdict is pinned for good by the account's first sandbox transaction; reads before that follow the live upstream balance.</p>
 
   <script>
     const chainIdHex = "${jsString(chainIdHex)}";

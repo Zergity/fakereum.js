@@ -1,0 +1,99 @@
+// End-to-end smoke test for EIP-191 signed-message transactions
+// (fakereum_transactionMessage + fakereum_sendTransaction): fetch the text to
+// sign, personal_sign it with a throwaway key, send, then verify the hash,
+// receipt, tx page, the "already known" replay refusal, and undo. The signer
+// must be able to pay gas, so it uses the genesis-funded anvil key like
+// smoke-tx.mjs. Run against a local `wrangler dev` on :8787.
+
+import { privateKeyToAccount } from 'viem/accounts'
+import { keccak256, serializeTransaction } from 'viem'
+
+const BASE = 'http://127.0.0.1:8787'
+const PK = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+const RECIP = '0x000000000000000000000000000000000000dEaD'
+
+async function rpcRaw(method, params = []) {
+  const r = await fetch(BASE + '/rpc', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  })
+  return r.json()
+}
+
+async function rpc(method, params = []) {
+  const j = await rpcRaw(method, params)
+  if (j.error) throw new Error(`${method}: ${j.error.message}`)
+  return j.result
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error('ASSERT FAILED: ' + msg)
+  console.log('  ok:', msg)
+}
+
+const account = privateKeyToAccount(PK)
+const request = { from: account.address, to: RECIP, value: '0x38d7ea4c68000', data: '0x12345678' + 'ab'.repeat(8) }
+
+console.log('1. fakereum_transactionMessage (nonce read from `from`)')
+const nonceBefore = BigInt(await rpc('eth_getTransactionCount', [account.address, 'latest']))
+const balBefore = BigInt(await rpc('eth_getBalance', [account.address, 'latest']))
+const { message, nonce } = await rpc('fakereum_transactionMessage', [request])
+const lines = message.split('\n')
+assert(lines[0] === `Fakereum Tx #${nonceBefore} on ${lines[0].split(' on ')[1]}` && lines[0].includes(' on '), 'header line carries the sandbox nonce')
+assert(nonce === '0x' + nonceBefore.toString(16), 'returned nonce matches')
+assert(lines[1] === `To: ${RECIP}`, 'To line is checksummed')
+assert(lines[2] === 'Value: 0.001', 'Value line')
+assert(lines[3].startsWith('Data: 0x12345678 and 8 bytes with hash 0x') && lines.length === 4, 'Data line, nothing after it')
+
+console.log('2. personal_sign + fakereum_sendTransaction (gas / fee left for the sandbox to fill)')
+const signature = await account.signMessage({ message })
+const { from: _from, ...fields } = { ...request, nonce }
+const hash = await rpc('fakereum_sendTransaction', [{ ...fields, signature }])
+const tx = await rpc('eth_getTransactionByHash', [hash])
+const raw = serializeTransaction(
+  { chainId: Number(tx.chainId), type: 'eip1559', nonce: Number(tx.nonce), to: tx.to, value: BigInt(tx.value), gas: BigInt(tx.gas),
+    maxFeePerGas: BigInt(tx.maxFeePerGas), maxPriorityFeePerGas: BigInt(tx.maxPriorityFeePerGas), data: tx.input },
+  { r: tx.r, s: tx.s, yParity: Number(BigInt(tx.v)) >= 27 ? Number(BigInt(tx.v)) - 27 : Number(BigInt(tx.v)) },
+)
+assert(hash === keccak256(raw), 'tx hash is the hash of the constructed tx (message signature as v/r/s)')
+assert(tx.r === '0x' + signature.slice(2, 66) && tx.s === '0x' + signature.slice(66, 130), 'tx v/r/s carry the message signature')
+
+console.log('3. tx + receipt')
+assert(tx.from.toLowerCase() === account.address.toLowerCase(), 'from is the message signer')
+assert(tx.nonce === nonce && BigInt(tx.gas) > 21000n && BigInt(tx.maxFeePerGas) > 0n, 'tx carries the signed nonce and filled-in gas / fee')
+assert(tx.signedMessage?.message === message, 'signed message attached')
+const rc = await rpc('eth_getTransactionReceipt', [hash])
+assert(rc.status === '0x1' && BigInt(rc.effectiveGasPrice) > 0n, 'receipt: success at a real gas price')
+const nonceAfter = BigInt(await rpc('eth_getTransactionCount', [account.address, 'latest']))
+const balAfter = BigInt(await rpc('eth_getBalance', [account.address, 'latest']))
+assert(nonceAfter === nonceBefore + 1n, 'nonce advanced')
+const spent = balBefore - balAfter
+const value = BigInt(request.value)
+assert(spent > value && spent <= value + BigInt(rc.gasUsed) * BigInt(tx.maxFeePerGas), 'sender paid value + gas within the cap')
+
+console.log('4. tx page')
+const page = await fetch(`${BASE}/tx/${hash}`).then((r) => r.text())
+assert(page.includes('Signed message (EIP-191)'), 'page shows the signed message block')
+
+console.log('5. replay refusal')
+const again = await rpcRaw('fakereum_sendTransaction', [{ ...fields, signature }])
+assert(/already known|nonce/i.test(again.error?.message ?? ''), 'resending the same signed message is refused: ' + again.error?.message)
+
+console.log('6. validation')
+const bad = await rpcRaw('fakereum_transactionMessage', [{ ...fields, value: '0x1' }])
+assert(bad.error?.code === -32602, '1 wei cannot be printed with 10 decimals')
+const { nonce: _n, ...noNonce } = fields
+const missing = await rpcRaw('fakereum_sendTransaction', [{ ...noNonce, signature }])
+assert(missing.error?.code === -32602 && /nonce/.test(missing.error.message), 'sendTransaction insists on the nonce')
+
+console.log('7. account kind')
+const k1 = await rpc('fakereum_accountKind', [account.address])
+assert(['sandbox', 'upstream'].includes(k1.kind), `kind after a tx: ${k1.kind} (pinned=${k1.pinned}, replayGuard=${k1.replayGuard})`)
+assert(k1.pinned === k1.replayGuard, 'a tx pins the kind exactly when the replay guard is on')
+
+console.log('8. undo')
+const undone = await rpc('fakereum_undoLastTx')
+assert(undone === hash, 'undo removed the message tx')
+
+console.log('\nALL OK')

@@ -23,6 +23,7 @@ export function buildInfos(cfg: Config, baseURL: string): Infos {
     res.etherscanApiV2 = baseURL + '/v2/api'
     res.explorer = baseURL
   }
+  if (cfg.upstreamRpcs[0]) res.upstreamRpc = cfg.upstreamRpcs[0]
   const ex = upstreamExplorerForChain(cfg.upstreamChainId)
   if (ex.base) res.upstreamExplorer = { name: ex.name, url: ex.base }
   return res

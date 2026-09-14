@@ -1,15 +1,21 @@
 // The EVM driver. Ports evm.go (Executor.ApplyTx / Call) onto EthereumJS v10:
-//   - ApplyTx: decode raw tx -> recover signer -> impersonatee guard -> replay
+//   - applyTx: decode raw tx -> recover signer -> impersonatee guard -> replay
 //     guard -> impersonation rewrite (sender=A, nonce forced) -> baseFee-lower
-//     -> runTx with an ecrecover precompile swap -> capture diff -> return the
-//     overlay WorkingChange set + the StoredTx (caller commits/persists).
+//     -> execute.
+//   - applyMessageTx: an EIP-191 signed-message tx (lib/eip191.ts) -> the
+//     legacy/1559 tx it describes, carrying the message signature as its v/r/s,
+//     sender = recovered signer -> impersonation rewrite -> baseFee-lower ->
+//     execute (no replay guard: nothing to replay).
+//   - execute (shared): prefetch -> runTx with an ecrecover precompile swap ->
+//     capture diff -> return the overlay WorkingChange set + the StoredTx
+//     (caller commits/persists).
 //   - call: read-only runCall for local-mode eth_call / eth_estimateGas with
 //     ephemeral state overrides.
 
 import { createVM, runTx, type VM } from '@ethereumjs/vm'
 import { createEVM } from '@ethereumjs/evm'
 import type { CustomPrecompile, PrecompileInput, ExecResult } from '@ethereumjs/evm'
-import { createTxFromRLP } from '@ethereumjs/tx'
+import { createFeeMarket1559Tx, createLegacyTx, createTxFromRLP } from '@ethereumjs/tx'
 import { createBlock } from '@ethereumjs/block'
 import {
   Address,
@@ -20,14 +26,17 @@ import {
 import { Common, Hardfork, Mainnet, createCustomCommon } from '@ethereumjs/common'
 import { recoverAddress } from 'viem'
 
-import type { Config, DeployMethod, StoredLog, StoredTx, TxDiff } from './types'
+import type { Config, DeployMethod, SignedMessage, StoredLog, StoredTx, TxDiff } from './types'
 import type { Overlay, WorkingChange } from './overlay'
-import { MissRecorder, type Fetcher } from './fetcher'
+import { MissRecorder, type BlockCtx, type Fetcher } from './fetcher'
 import { ForkingStateManager } from './statemanager'
 import { headTime } from './head'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
 import { decodeRevertReason } from './ui/decode'
+import type { MessageTxFields } from './lib/eip191'
+import { isLegacyFee, type MessageTxFee } from './message_tx'
+import type { AccountKind, AccountKinds } from './account_kind'
 import { addrKey, bytesToHex, checksumAddress, hexToBytes, toQuantity, type Hex } from './lib/hex'
 
 const ECRECOVER_GAS = 3000n
@@ -45,6 +54,40 @@ const MAX_WARM_ROUNDS = 6
 export interface ApplyResult {
   tx: StoredTx
   changes: WorkingChange[]
+  /**
+   * The signer's account kind as looked up for this tx (replay guard on only).
+   * The caller pins it once the tx lands — see account_kind.ts.
+   */
+  signerKind?: AccountKind
+}
+
+/** An EIP-191 signed-message transaction, already verified (see message_tx.ts). */
+export interface MessageTx extends MessageTxFields {
+  /** Recovered signer of `signature`. */
+  signer: Hex
+  message: string
+  signature: Hex
+  /** Unsigned gas terms, from the params or wallet-style defaults. */
+  gasLimit: bigint
+  fee: MessageTxFee
+}
+
+type RunnableTx = Parameters<typeof runTx>[1]['tx']
+type SenderOverridable = { getSenderAddress: () => Address }
+
+interface ExecParams {
+  tx: RunnableTx
+  block: BlockCtx
+  baseFee: bigint
+  /** Effective sender (impersonatee A when impersonated). */
+  fromHex: Hex
+  /** Physical signer. */
+  signerHex: Hex
+  skipNonce: boolean
+  hash: Hex
+  raw: Hex
+  signedMessage?: SignedMessage
+  signerKind?: AccountKind
 }
 
 export interface CallArgs {
@@ -73,13 +116,13 @@ export interface AccountOverride {
 
 export class Executor {
   private common: Common
-  private guardVerdict = new Map<string, boolean>()
 
   constructor(
     private readonly overlay: Overlay,
     private readonly fetcher: Fetcher,
     private readonly cfg: Config,
     private readonly impersonators: Impersonators,
+    private readonly kinds: AccountKinds,
   ) {
     // Pin to Cancun (matches the Go config's explicit Shanghai+Cancun forks) with
     // the sandbox chain id bound for tx recovery. Cancun keeps block-header
@@ -99,47 +142,114 @@ export class Executor {
     const signer = tx.getSenderAddress()
     const signerHex = ejBytesToHex(signer.bytes) as Hex
 
-    // Impersonatee guard: a configured impersonatee A must be driven via its
-    // impersonator key B, never sign directly. Checked ahead of the replay guard.
-    if (this.impersonators.isImpersonatee(signerHex)) {
-      throw new Error(
-        `signer ${signerHex} is configured as an impersonatee; act on it through its impersonator key (sign with B), not by signing as A directly`,
-      )
-    }
+    this.assertNotImpersonatee(signerHex)
 
-    // Replay guard: reject signers holding real upstream balance (memoized once).
+    // Replay guard: reject signers of the 'upstream' kind (funded on the real
+    // chain; pinned by their first landed tx — see account_kind.ts).
+    let signerKind: AccountKind | undefined
     if (rejectUpstreamSignersEnabled(this.cfg)) {
-      const allowed = await this.signerCleared(signerHex)
-      if (!allowed) {
+      signerKind = (await this.kinds.lookup(signerHex)).kind
+      if (signerKind === 'upstream') {
         throw new Error(
-          `signer ${signerHex} holds a native balance on the upstream chain (chain id ${this.cfg.chainId}); refusing to execute because this transaction could be replayed onto the real chain. Sign from a wallet funded only with Fake Native Token (zero upstream balance)`,
+          `signer ${signerHex} holds a native balance on the upstream chain (chain id ${this.cfg.chainId}); refusing to execute because this transaction could be replayed onto the real chain. Send it as an EIP-191 signed message (fakereum_sendTransaction) instead, or sign from a wallet funded only with Fake Native Token (zero upstream balance)`,
         )
       }
     }
 
     // Impersonation: sender becomes A; nonce forced to A's chain nonce.
-    const mappedA = this.impersonators.resolve(signerHex)
-    const impersonated = mappedA !== null
-    let fromHex = signerHex
-    if (impersonated) {
-      fromHex = mappedA!
-      const aAddr = createAddressFromString(mappedA!.toLowerCase())
-      ;(tx as unknown as { getSenderAddress: () => Address }).getSenderAddress = () => aAddr
-    }
+    const fromHex = this.impersonateSender(tx, signerHex)
+    const impersonated = fromHex !== signerHex
 
-    // Always fetch the live tip (uncached): the executed tx must see the true
-    // current block.number, not a value cached up to ttlMs ago. Its timestamp
-    // is the head clock (see head.ts): wall clock, never behind the upstream
-    // header — a lagging node or a chain idle between txs must not hand the tx
-    // a stopped block.timestamp.
-    const tip = await this.fetcher.getLatestBlockUncached()
-    const block = { ...tip, time: headTime(tip.time) }
+    const block = await this.liveBlock()
 
     // baseFee-lowering: if the signed maxFeePerGas is below the upstream
     // baseFee, lower the block baseFee to the cap so the tx still lands.
     let baseFee = block.baseFee
     const feeCap = txMaxFee(tx)
     if (feeCap !== null && feeCap > 0n && baseFee > feeCap) baseFee = feeCap
+
+    return this.execute({
+      tx,
+      block,
+      baseFee,
+      fromHex,
+      signerHex,
+      skipNonce: impersonated, // impersonation forces A's nonce; skip the equality check
+      hash: bytesToHex(tx.hash()),
+      raw: bytesToHex(rawTx),
+      signerKind,
+    })
+  }
+
+  /**
+   * Execute an EIP-191 signed-message transaction (lib/eip191.ts). The message
+   * binds nonce, to, value and data; gas limit and fee terms come unsigned from
+   * the params. This builds the corresponding legacy or EIP-1559 tx carrying
+   * the message signature's r/s/v as its own signature fields — so it has real
+   * RLP bytes and a real tx hash — attributes it to the recovered signer (the
+   * tx-level recovery would yield a stranger, since the signature covers the
+   * message, not the tx) and runs it through the same path as a raw tx: same
+   * nonce/balance checks, same baseFee-lowering, same fee accounting, same
+   * impersonation NAT. Only the replay guard is skipped: a personal_sign message
+   * can't be broadcast as a tx on any chain, so there is nothing to replay.
+   */
+  async applyMessageTx(m: MessageTx): Promise<ApplyResult> {
+    const signerHex = m.signer.toLowerCase() as Hex
+    this.assertNotImpersonatee(signerHex)
+    // No guard here, but a landed tx pins the signer's kind like any write;
+    // look it up now so the caller can pin without a second upstream read.
+    const signerKind = rejectUpstreamSignersEnabled(this.cfg)
+      ? (await this.kinds.lookup(signerHex)).kind
+      : undefined
+
+    const { r, s, yParity } = splitSignature(m.signature)
+    const base = { nonce: m.nonce, to: m.to, value: m.value, data: m.data, gasLimit: m.gasLimit, r, s }
+    const opts = { common: this.common, freeze: false }
+    const tx: RunnableTx = isLegacyFee(m.fee)
+      ? createLegacyTx(
+          { ...base, gasPrice: m.fee.gasPrice, v: this.cfg.chainId * 2n + 35n + yParity }, // EIP-155 v
+          opts,
+        )
+      : createFeeMarket1559Tx(
+          {
+            ...base,
+            chainId: this.cfg.chainId,
+            maxFeePerGas: m.fee.maxFeePerGas,
+            maxPriorityFeePerGas: m.fee.maxPriorityFeePerGas,
+            v: yParity,
+          },
+          opts,
+        )
+    forceSender(tx, signerHex)
+    const fromHex = this.impersonateSender(tx, signerHex)
+    const impersonated = fromHex !== signerHex
+
+    const block = await this.liveBlock()
+    let baseFee = block.baseFee
+    const feeCap = txMaxFee(tx)
+    if (feeCap !== null && feeCap > 0n && baseFee > feeCap) baseFee = feeCap
+
+    return this.execute({
+      tx,
+      block,
+      baseFee,
+      fromHex,
+      signerHex,
+      skipNonce: impersonated,
+      hash: bytesToHex(tx.hash()),
+      raw: bytesToHex(tx.serialize()),
+      signedMessage: { message: m.message, signature: m.signature },
+      signerKind,
+    })
+  }
+
+  /**
+   * Shared execution core: warm the fetcher cache, run the tx against a fork
+   * of overlay+upstream, and package the diff + receipt into a StoredTx. The
+   * caller has already decided the sender, the block baseFee and the hash.
+   */
+  private async execute(p: ExecParams): Promise<ApplyResult> {
+    const { tx, block, baseFee, fromHex, signerHex } = p
 
     // Warm the fetcher cache for everything this tx is likely to touch, in 2-3
     // batched subrequests, before the lazy fork starts issuing per-read
@@ -179,7 +289,7 @@ export class Executor {
     const res = await runTx(vm, {
       tx,
       block: ejBlock,
-      skipNonce: impersonated, // impersonation forces A's nonce; skip the equality check
+      skipNonce: p.skipNonce,
       skipHardForkValidation: true,
     })
 
@@ -187,7 +297,7 @@ export class Executor {
     const returnData = res.execResult.returnValue ?? new Uint8Array(0)
     const { diff, changes } = sm.collectChanges()
 
-    const hash = bytesToHex(tx.hash())
+    const hash = p.hash
     const gasPrice = await this.effectiveGasPrice(tx)
     const logs: StoredLog[] = (res.execResult.logs ?? []).map((l) =>
       toStoredLog(l, block.number, block.hash, hash),
@@ -212,7 +322,7 @@ export class Executor {
 
     const stored: StoredTx = {
       hash,
-      raw: bytesToHex(rawTx),
+      raw: p.raw,
       type: tx.type,
       from: fromHex,
       signedBy: signerHex,
@@ -232,6 +342,7 @@ export class Executor {
       blockHash: block.hash,
       blockTime: toQuantity(block.time),
       seq: 0, // assigned by Sandbox.store
+      ...(p.signedMessage ? { signedMessage: p.signedMessage } : {}),
       diff,
     }
     if (status === 0) {
@@ -241,17 +352,39 @@ export class Executor {
       if (reason) stored.revertReason = reason
     }
 
-    return { tx: stored, changes }
+    return { tx: stored, changes, ...(p.signerKind ? { signerKind: p.signerKind } : {}) }
   }
 
-  private async signerCleared(signerHex: Hex): Promise<boolean> {
-    const k = addrKey(signerHex)
-    const memo = this.guardVerdict.get(k)
-    if (memo !== undefined) return memo
-    const bal = await this.fetcher.getBalanceUncached(signerHex)
-    const allowed = bal === 0n
-    this.guardVerdict.set(k, allowed)
-    return allowed
+  /**
+   * Impersonatee guard: a configured impersonatee A must be driven via its
+   * impersonator key B, never sign directly. Checked ahead of the replay guard.
+   */
+  private assertNotImpersonatee(signerHex: Hex): void {
+    if (this.impersonators.isImpersonatee(signerHex)) {
+      throw new Error(
+        `signer ${signerHex} is configured as an impersonatee; act on it through its impersonator key (sign with B), not by signing as A directly`,
+      )
+    }
+  }
+
+  /** Map signer B to impersonatee A (overriding the tx's sender); returns the effective sender. */
+  private impersonateSender(tx: SenderOverridable, signerHex: Hex): Hex {
+    const mappedA = this.impersonators.resolve(signerHex)
+    if (mappedA === null) return signerHex
+    forceSender(tx, mappedA)
+    return mappedA
+  }
+
+  /**
+   * Always fetch the live tip (uncached): the executed tx must see the true
+   * current block.number, not a value cached up to ttlMs ago. Its timestamp
+   * is the head clock (see head.ts): wall clock, never behind the upstream
+   * header — a lagging node or a chain idle between txs must not hand the tx
+   * a stopped block.timestamp.
+   */
+  private async liveBlock(): Promise<BlockCtx> {
+    const tip = await this.fetcher.getLatestBlockUncached()
+    return { ...tip, time: headTime(tip.time) }
   }
 
   /**
@@ -500,6 +633,26 @@ export class Executor {
 }
 
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
+
+/** r, s and the recovery bit of a 65-byte r||s||v signature (v in {0,1,27,28}). */
+function splitSignature(sig: Hex): { r: bigint; s: bigint; yParity: bigint } {
+  const b = hexToBytes(sig)
+  if (b.length !== 65) throw new Error(`expected 65-byte signature, got ${b.length}`)
+  const v = b[64]!
+  const yParity = v >= 27 ? v - 27 : v
+  if (yParity !== 0 && yParity !== 1) throw new Error(`invalid signature v ${v}`)
+  return {
+    r: BigInt(bytesToHex(b.subarray(0, 32))),
+    s: BigInt(bytesToHex(b.subarray(32, 64))),
+    yParity: BigInt(yParity),
+  }
+}
+
+/** Make the tx report `addr` as its sender regardless of what v/r/s recover to. */
+function forceSender(tx: SenderOverridable, addr: Hex): void {
+  const a = createAddressFromString(addr.toLowerCase())
+  tx.getSenderAddress = () => a
+}
 
 function txMaxFee(tx: { type: number; maxFeePerGas?: bigint; gasPrice?: bigint }): bigint | null {
   if (tx.type <= 1) return tx.gasPrice ?? null // legacy / 2930

@@ -304,9 +304,29 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   }
 
   const nonceDec = toBigInt(tx.nonce).toString()
+  const viaBlock = tx.signedMessage
+    ? `    <dt>Submitted as</dt><dd>EIP-191 signed message <span class="muted">(personal_sign)</span></dd>\n`
+    : ''
   const gasUsed = toBigInt(tx.gasUsed)
   const gasLimit = toBigInt(tx.gasLimit)
   const gasLine = gasLimit > 0n ? `${esc(gasUsed.toString())} / ${esc(gasLimit.toString())}` : esc(gasUsed.toString())
+
+  // A message tx also shows the text the wallet signed and its signature, so
+  // anyone can re-verify the signer with personal_ecRecover.
+  const rawSection =
+    (tx.signedMessage
+      ? `  <details open>
+    <summary>Signed message (EIP-191)</summary>
+    <pre>${esc(tx.signedMessage.message)}</pre>
+    <div class="muted" style="margin-top:.5rem">signature</div>
+    <pre>${esc(tx.signedMessage.signature)}</pre>
+  </details>
+`
+      : '') +
+    `  <details>
+    <summary>Raw tx${tx.signedMessage ? ' <span class="muted">(v/r/s are the message signature; the sender is the message signer, not what they recover to)</span>' : ''}</summary>
+    <pre>${esc(tx.raw)}</pre>
+  </details>`
 
   const blockNumber = toBigInt(tx.blockNumber)
   let blockBlock = ''
@@ -388,7 +408,7 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   <dl>
     <dt>Status</dt>            <dd class="${statusOK ? 'ok' : 'err'}">${esc(status)}${errSpan}</dd>
 ${revertBlock}    <dt>From</dt>              <dd><a href="${esc(fromURL)}" rel="noopener noreferrer">${esc(from)}</a></dd>
-${toBlock}${contractBlock}${createdBlock}${valueBlock}    <dt>Nonce</dt>             <dd>${esc(nonceDec)}</dd>
+${toBlock}${contractBlock}${createdBlock}${valueBlock}${viaBlock}    <dt>Nonce</dt>             <dd>${esc(nonceDec)}</dd>
     <dt>Gas used / limit</dt>  <dd>${gasLine}</dd>
 ${blockBlock}${blockHashBlock}${blockTimeBlock}  </dl>
 
@@ -405,10 +425,7 @@ ${logsSection}
   <div class="tag">state changes (${diffRows.length} ${accountWord})</div>
 ${diffSection}
 
-  <details>
-    <summary>Raw tx</summary>
-    <pre>${esc(tx.raw)}</pre>
-  </details>
+${rawSection}
 </body>
 </html>`
 }

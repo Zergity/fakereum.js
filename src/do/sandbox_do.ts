@@ -40,7 +40,7 @@ import { HeadTimeForwarder, isHeadTag, patchHeadBlock } from '../head'
 import { Fetcher, type PersistedCode } from '../fetcher'
 import { Overlay, type OverlayDelta } from '../overlay'
 import { Sandbox, parseLogFilter, logMatches } from '../sandbox'
-import { Executor, type CallArgs } from '../executor'
+import { Executor, type ApplyResult, type CallArgs } from '../executor'
 import { Impersonators } from '../impersonate/store'
 import {
   rewriteImpersonatorRequest,
@@ -56,6 +56,8 @@ import {
   type ClearCounts,
 } from '../impersonate/admin_rpc'
 import { parseStateOverrides } from '../state_override'
+import { rpcSendMessageTx, rpcTransactionMessage, type MessageTxDeps } from '../message_tx'
+import { AccountKinds, type AccountKind } from '../account_kind'
 import { renderReceipt, renderTx, renderLog } from '../render'
 import { rpcInfosCall } from '../infos'
 import { corsHeaders, applyNoStore } from '../lib/cors'
@@ -99,6 +101,7 @@ export class EvmSandbox {
   private overlay = new Overlay()
   private sandbox = new Sandbox()
   private impersonators = new Impersonators()
+  private kinds: AccountKinds
   private executor: Executor | null = null
   private limiter: RateLimiter | null
   private etherscanKeyIdx = 0
@@ -120,6 +123,12 @@ export class EvmSandbox {
       put: (addr: string, entry: PersistedCode) =>
         this.ctx.storage.put('codecache:' + addr, entry),
     })
+    // Pinned per-account kinds (account_kind.ts): upstream truth about the
+    // account, not sandbox state — deliberately untouched by fakereum_clearSandbox.
+    this.kinds = new AccountKinds(
+      (addr) => this.fetcher.getBalanceUncached(addr),
+      { put: (key, kind) => this.ctx.storage.put('account:kind:' + key, kind) },
+    )
     this.limiter = RateLimiter.fromConfig(this.cfg.rateLimitRps, this.cfg.rateLimitExempt)
     // Hydrate persisted state before serving any request (re-runs on wake).
     this.ctx.blockConcurrencyWhile(async () => {
@@ -142,6 +151,9 @@ export class EvmSandbox {
     }
     this.sandbox.finalizeLoad(meta.nextSeq, meta.nextLog)
 
+    const kindRows = await storage.list<AccountKind>({ prefix: 'account:kind:' })
+    for (const [key, kind] of kindRows) this.kinds.load(key.slice('account:kind:'.length), kind)
+
     const impMap = await storage.get<{ map: Record<string, string> }>('impersonators')
     this.impersonators.loadJSON(impMap?.map)
     if (this.cfg.impersonateSeed.length > 0) {
@@ -157,7 +169,7 @@ export class EvmSandbox {
     this.resolving = (async () => {
       const upstreamChainId = await this.fetcher.chainId()
       resolveConfig(this.cfg, upstreamChainId)
-      this.executor = new Executor(this.overlay, this.fetcher, this.cfg, this.impersonators)
+      this.executor = new Executor(this.overlay, this.fetcher, this.cfg, this.impersonators, this.kinds)
       // Genesis seed: fill-only, once per chain.
       if (this.cfg.genesis) {
         const applied = await this.ctx.storage.get<boolean>('meta:genesisApplied')
@@ -326,7 +338,7 @@ export class EvmSandbox {
       return makeError(
         req.id,
         ERR_METHOD_NOT_FOUND,
-        `${req.method} is disabled in sandbox; use eth_sendRawTransaction`,
+        `${req.method} is disabled in sandbox; use eth_sendRawTransaction, or fakereum_sendTransaction with an EIP-191 signature`,
       )
     }
 
@@ -369,6 +381,19 @@ export class EvmSandbox {
     switch (req.method) {
       case 'eth_sendRawTransaction':
         return this.rpcSendRawTransaction(req)
+      case 'fakereum_accountKind':
+        return this.rpcAccountKind(id, params)
+      case 'fakereum_transactionMessage':
+        return rpcTransactionMessage(req, this.cfg, this.messageTxDeps(req))
+      case 'fakereum_sendTransaction':
+        return rpcSendMessageTx(req, this.cfg, {
+          ...this.messageTxDeps(req),
+          apply: async (m) => {
+            const res = await this.executor!.applyMessageTx(m)
+            await this.commitTx(res)
+            return res.tx.hash
+          },
+        })
       case 'eth_call': {
         const infos = rpcInfosCall(req, this.cfg, baseURL)
         if (infos) return infos
@@ -432,16 +457,70 @@ export class EvmSandbox {
     const raw = params[0]
     if (typeof raw !== 'string') return makeError(req.id, ERR_INVALID_PARAMS, 'invalid params')
     try {
-      const { tx, changes } = await this.executor!.applyTx(hexToBytes(raw))
-      const delta = this.overlay.commit(changes)
-      this.sandbox.store(tx)
-      await this.persistOverlay(delta)
-      await this.persistSandboxTx(tx)
-      this.notifySandboxTx(tx)
-      return makeResult(req.id, tx.hash)
+      const res = await this.executor!.applyTx(hexToBytes(raw))
+      await this.commitTx(res)
+      return makeResult(req.id, res.tx.hash)
     } catch (e) {
       return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
     }
+  }
+
+  /**
+   * fakereum_accountKind [address] -> { address, kind, pinned, replayGuard }.
+   * How this account should send on this sandbox: 'upstream' = EIP-191 signed
+   * messages only (and no EIP-712 requests), 'sandbox' = ordinary wallet flows.
+   * A read never pins: until the account's first sandbox tx the answer follows
+   * its live upstream balance (pinned=false); the first tx pins it for good
+   * (see account_kind.ts). With the replay guard off (distinct chain id)
+   * nothing can replay, so every account is 'sandbox' and upstream is not
+   * consulted.
+   */
+  private async rpcAccountKind(id: RpcRequest['id'], params: unknown[]): Promise<RpcResponse> {
+    const addr = asAddr(params[0])
+    if (!addr) return makeError(id, ERR_INVALID_PARAMS, 'invalid address')
+    const replayGuard = rejectUpstreamSignersEnabled(this.cfg)
+    try {
+      const { kind, pinned } = replayGuard
+        ? await this.kinds.lookup(addr)
+        : { kind: 'sandbox' as AccountKind, pinned: false }
+      return makeResult(id, { address: checksumAddress(addr), kind, pinned, replayGuard })
+    } catch (e) {
+      return makeError(id, ERR_INTERNAL, String((e as Error).message ?? e))
+    }
+  }
+
+  /** Sandbox-aware nonce / gas / fee lookups the signed-message methods fill defaults with. */
+  private messageTxDeps(req: RpcRequest): MessageTxDeps {
+    return {
+      nonce: async (from) => {
+        const r = await this.rpcGetNonce(req.id, [from, 'latest'])
+        if (!r || r.error) throw new Error(r?.error?.message ?? 'cannot read nonce')
+        return toBigInt(r.result as string)
+      },
+      estimateGas: async (call) => {
+        const r = await this.rpcEstimateGas({ ...req, method: 'eth_estimateGas', params: [call] }, [call])
+        if (!r || r.error) throw new Error(r?.error?.message ?? 'cannot estimate gas')
+        return toBigInt(r.result as string)
+      },
+      gasPrice: () => this.fetcher.gasPrice(),
+    }
+  }
+
+  /**
+   * Land an executed tx: overlay commit, sandbox store, persistence, subscriber
+   * push — and, as this is a write by the signer, pin its account kind.
+   */
+  private async commitTx({ tx, changes, signerKind }: ApplyResult): Promise<void> {
+    // The nonce check normally stops a re-sent tx before it gets here; under
+    // impersonation (nonce forced) it would land twice under one hash and
+    // orphan the first copy's logs. Answer like a node instead.
+    if (this.sandbox.get(tx.hash)) throw new Error('already known')
+    const delta = this.overlay.commit(changes)
+    this.sandbox.store(tx)
+    await this.persistOverlay(delta)
+    await this.persistSandboxTx(tx)
+    if (signerKind) await this.kinds.pin(tx.signedBy, signerKind)
+    this.notifySandboxTx(tx)
   }
 
   // --- overlay-aware reads ------------------------------------------------
