@@ -63,8 +63,13 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
   const nonceHex = nonceSet ? overlay!.nonce! : upstream.nonce
   const codeHex = codeSet ? overlay!.code! : upstream.code
 
-  // Balance rendered as decimal wei (Go: big.Int.String()).
+  // Balance rendered as decimal wei (Go: big.Int.String()). Without a sandbox
+  // balance the figure is the upstream balance scaled by the multiplier.
   const balance = toBigInt(balanceHex ?? '0x0').toString()
+  const upstreamScaleNote =
+    opts.cfg.balanceMultiplier > 1n
+      ? ` <span class="muted">(upstream × ${esc(opts.cfg.balanceMultiplier.toString())})</span>`
+      : ''
   const nonce = toBigInt(nonceHex ?? '0x0').toString()
   const code: Hex | undefined = codeHex
   const codeSize = codeBytesLen(code)
@@ -147,7 +152,7 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
 
   parts.push(`
   <dl>
-    <dt>Balance (wei)</dt> <dd>${esc(balance)}${balanceSet ? ' ' + SANDBOX_PILL : ''}</dd>
+    <dt>Balance (wei)</dt> <dd>${esc(balance)}${balanceSet ? ' ' + SANDBOX_PILL : upstreamScaleNote}</dd>
     <dt>Nonce</dt>         <dd>${esc(nonce)}${nonceSet ? ' ' + SANDBOX_PILL : ''}</dd>
     <dt>Code size</dt>     <dd>${esc(codeSize.toString())} bytes${codeSet ? ' ' + SANDBOX_PILL : ''}</dd>
     <dt>Type</dt>          <dd>${isContract ? 'contract' : 'EOA'}</dd>

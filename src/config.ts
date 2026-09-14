@@ -94,8 +94,20 @@ export function loadConfig(env: Env): Config {
     rateLimitRps: Number.isFinite(rps) ? rps : 0,
     rateLimitExempt: splitCSV(env.RATE_LIMIT_EXEMPT),
     genesis: parseGenesis(env.GENESIS),
+    balanceMultiplier: parseBalanceMultiplier(env.BALANCE_MULTIPLIER),
     resolved: false,
   }
+}
+
+export const DEFAULT_BALANCE_MULTIPLIER = 1000n
+
+/** Positive integer; blank/invalid → 1000. A value of 1 turns scaling off. */
+export function parseBalanceMultiplier(raw: string | undefined): bigint {
+  const t = (raw ?? '').trim()
+  if (t === '') return DEFAULT_BALANCE_MULTIPLIER
+  if (!/^[0-9]+$/.test(t)) return DEFAULT_BALANCE_MULTIPLIER
+  const n = BigInt(t)
+  return n >= 1n ? n : DEFAULT_BALANCE_MULTIPLIER
 }
 
 /**

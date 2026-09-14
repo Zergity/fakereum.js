@@ -27,6 +27,8 @@ export interface Env {
   /** Comma-separated IPs/CIDRs that bypass the per-IP rate limit. */
   RATE_LIMIT_EXEMPT?: string
   GENESIS?: string
+  /** Sandbox native balance = upstream balance × this, until the account's own state takes over. Default 1000. */
+  BALANCE_MULTIPLIER?: string
 }
 
 export type EthCallStorageMode = 'stateOverride' | 'getStorageAt'
@@ -65,6 +67,13 @@ export interface Config {
   /** IPs/CIDRs exempt from rate limiting. */
   rateLimitExempt: string[]
   genesis: GenesisAlloc | null
+  /**
+   * Native-balance multiplier applied to every balance the sandbox
+   * materializes from upstream (an account not yet holding a sandbox balance
+   * shows upstream × this). Once the account's first tx lands, or it imports,
+   * the overlay tracks the balance and upstream no longer matters.
+   */
+  balanceMultiplier: bigint
   resolved: boolean
 }
 

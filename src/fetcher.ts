@@ -63,11 +63,19 @@ interface CacheEntry {
 }
 
 export class Fetcher {
+  /**
+   * `balanceMultiplier` scales every native balance read through the cached
+   * paths (getBalance / peekBalance / the prefetch cache they consume): the
+   * sandbox shows an account that has no sandbox balance yet as holding
+   * upstream × multiplier. The uncached getBalanceUncached stays raw — it
+   * answers "does this account hold real funds?" for the replay guard.
+   */
   constructor(
     private readonly up: Upstream,
     private readonly ttlMs: number,
     private readonly cache: Map<string, CacheEntry>,
     private readonly codeStore?: CodeStore,
+    private readonly balanceMultiplier: bigint = 1n,
   ) {}
 
   private keyFor(method: string, params: unknown[]): string {
@@ -118,7 +126,7 @@ export class Fetcher {
 
   async peekBalance(addr: Hex): Promise<bigint | undefined> {
     const v = this.memGet(this.keyFor('eth_getBalance', [addr, 'latest']))
-    return typeof v === 'string' ? toBigInt(v) : undefined
+    return typeof v === 'string' ? toBigInt(v) * this.balanceMultiplier : undefined
   }
 
   async peekNonce(addr: Hex): Promise<bigint | undefined> {
@@ -240,10 +248,12 @@ export class Fetcher {
     return toBigInt(asString(await this.cached('eth_chainId', [])))
   }
 
+  /** The sandbox's view of an account with no sandbox balance: upstream × multiplier. */
   async getBalance(addr: Hex): Promise<bigint> {
-    return toBigInt(asString(await this.cached('eth_getBalance', [addr, 'latest'])))
+    return toBigInt(asString(await this.cached('eth_getBalance', [addr, 'latest']))) * this.balanceMultiplier
   }
 
+  /** Raw upstream balance, unscaled and uncached — the replay guard's question. */
   async getBalanceUncached(addr: Hex): Promise<bigint> {
     return toBigInt(asString(await this.up.callResult('eth_getBalance', [addr, 'latest'])))
   }

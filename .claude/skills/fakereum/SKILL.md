@@ -26,7 +26,7 @@ The current instance forks Arbitrum One. Base URL: `https://fakereum-42161.derio
 | Currency | `FETH` |
 | RPC | `https://fakereum-42161.derion.io/rpc` |
 | Etherscan API | `https://fakereum-42161.derion.io/api` and `/v2/api` |
-| Explorer | `https://fakereum-42161.derion.io/` (`/txs`, `/accounts`, `/admin`) |
+| Explorer | `https://fakereum-42161.derion.io/` (`/txs`, `/accounts`, `/import`, `/admin`) |
 | Upstream | Arbitrum One via `https://arbitrum-one-rpc.publicnode.com` |
 
 The chain id deliberately matches real Arbitrum, which is exactly why the **replay guard**
@@ -219,7 +219,8 @@ Round `value` to a multiple of 1e8 wei first: the message prints it with 10 deci
 sandbox refuses anything finer. Full message format and rules in the next-but-one section.
 
 **3a. `kind === 'upstream'` → signed messages only, and never EIP-712.** In both setups every
-send goes through `sendViaSignedMessage`. Never ask this account to sign a transaction or any
+send goes through `sendViaSignedMessage`. Funding is not an issue: the account already holds
+1000× its real balance in FETH here (see *Balances* below). Never ask this account to sign a transaction or any
 EIP-712 typed data — Permit / Permit2 included — while it is on the sandbox; those signatures
 replay upstream. Where your flow would collect a permit signature, use the approval-transaction
 fallback (an `approve` through `sendViaSignedMessage`) or hide that path in sandbox mode. The
@@ -235,9 +236,9 @@ has nothing to lose to a replay. The transaction that uses them:
 - *Setup B:* `eth_sendTransaction` through the wallet, exactly as before — the wallet's RPC is
   the sandbox, which executes it locally.
 
-Either way the account needs FETH inside the fork to pay for gas — fund it there (a transfer
-from a genesis-prefunded account, for instance). Because the kind is pinned, no later upstream
-deposit turns this account back into 3a.
+Either way the account needs FETH inside the fork to pay for gas — an empty burner has none, so
+import a balance from another chain (`/import`, see *Balances* below) or receive a transfer.
+Because the kind is pinned, no later upstream deposit turns this account back into 3a.
 
 Gotchas that remain either way:
 
@@ -247,6 +248,33 @@ Gotchas that remain either way:
   your real key.
 - Ask `fakereum_accountKind` again when the connected account changes (a fresh burner is its
   own account with its own verdict).
+
+## Balances: 1000× upstream, and importing from another chain
+
+Nobody needs a faucet. An account that has never transacted on the sandbox is shown holding
+**1000× its native balance on the upstream chain** (`eth_getBalance`, what a tx can spend,
+what forwarded `eth_call` / `eth_estimateGas` see for `from`). Once its first sandbox tx lands
+the sandbox tracks the balance itself and upstream stops mattering. So an `upstream`-kind
+account (real ETH on Arbitrum) arrives with 1000× that in FETH and can pay gas and value
+straight away through signed messages; an empty burner arrives with nothing.
+
+Funds on **another** chain can be brought in once per account at `<base>/import`
+(Ethereum Mainnet, Arbitrum One, Base, Robinhood Chain — minus the sandbox's own upstream,
+which is automatic). The page lists the account's balance on each source; the user picks one
+and `personal_sign`s
+
+```
+Fakereum Import to Fake Arbitrum One
+Account: 0xAb58…eC9B
+From: Ethereum Mainnet (chain id 1)
+```
+
+and the sandbox credits `balance × 1000` FETH on top of what the account shows now. One import
+per account, from one chain, ever — it survives `fakereum_clearSandbox`; a zero balance or a
+failed read does not consume it. From a dapp, the same three calls go over HTTP to `infos.rpc`:
+`fakereum_importSources [address]`, `fakereum_importMessage [{account, chainId}]`,
+`fakereum_importBalance [{account, chainId, signature}]`. Importing pins the account's kind
+like a landed tx.
 
 ## Override the RPC endpoint
 
@@ -381,6 +409,8 @@ specific to the Arbitrum deployment. Deploy steps are in the repo README.
 
 - **One sandbox per deployment** (one upstream → one sandbox chain id); state is shared and
   persistent across everyone hitting it.
+- Balances: 1000× the upstream balance until an account's first sandbox tx; `/import` brings
+  funds from another chain once per account (see above).
 - On the current Free-plan hosting, external subrequests are capped, so a pathological
   transaction touching a large cold-state graph can fail with "Too many subrequests." Normal
   transfers and moderate contract calls are fine.

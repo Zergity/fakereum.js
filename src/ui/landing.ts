@@ -91,7 +91,7 @@ export function renderLanding(opts: RenderLandingOpts): string {
   const replayGuardSection = replayGuard
     ? `
   <div class="tag" style="margin-top:2rem">replay guard</div>
-  <p style="color:#7d8590">Anti-replay protection is <span class="ok">on</span>. A transaction whose signer already holds a native balance on <code>${esc(upstreamName)}</code> is refused — this sandbox shares that chain's ID, so such a signed tx could be replayed onto the real chain. Sign from a wallet funded only with ${esc(symbol)} (zero upstream balance).</p>`
+  <p style="color:#7d8590">Anti-replay protection is <span class="ok">on</span>. A transaction whose signer already holds a native balance on <code>${esc(upstreamName)}</code> is refused — this sandbox shares that chain's ID, so such a signed tx could be replayed onto the real chain. Such an account sends <a href="#signed">signed messages</a> instead; a wallet that is empty upstream transacts directly.</p>`
     : ''
 
   return `<!doctype html>
@@ -153,6 +153,7 @@ ${replayGuardSection}
   <ul class="explore">
     <li><a href="/txs">Sandbox transactions &rarr;</a></li>
     <li><a href="/accounts">Sandbox accounts &rarr;</a></li>
+    <li><a href="/import">Import a balance from another chain &rarr;</a></li>
     <li><a href="/admin">Admin &rarr;</a></li>
     <li><a href="https://github.com/Zergity/fakereum" target="_blank" rel="noopener noreferrer">Source on GitHub &nearr;</a></li>
   </ul>
@@ -182,7 +183,10 @@ ${replayGuardSection}
   "upstreamExplorer": { "name": "…", "url": "…" }   // optional
 }</code></pre>
 
-  <div class="tag" style="margin-top:2rem">send with a signed message</div>
+  <div class="tag" style="margin-top:2rem">balances</div>
+  <p style="color:#7d8590">Every account starts out holding <strong>${esc(cfg.balanceMultiplier.toString())}×</strong> its native balance on ${esc(upstreamName)}, automatically — <code>eth_getBalance</code> and transactions here see that figure until the account's first sandbox transaction lands, after which the sandbox tracks the balance itself. Funds on another chain (Ethereum, Arbitrum, Base, Robinhood Chain) can be <a href="/import">imported once per account</a> at the same multiplier, authorized by a <code>personal_sign</code> message.</p>
+
+  <div class="tag" id="signed" style="margin-top:2rem">send with a signed message</div>
   <p style="color:#7d8590">Besides <code>eth_sendRawTransaction</code>, a transaction can be submitted as a plain <code>personal_sign</code> (EIP-191) message. The signature is chain-agnostic, so the wallet can sit on any network — no sandbox chain added, no switch. The message binds nonce, recipient, value and calldata; gas limit and fee terms are passed unsigned alongside (defaulted wallet-style when omitted). The sandbox then runs a normal transaction from the signer. Ask for the text (pass <code>from</code> and the sandbox reads the nonce for you), have the wallet sign it, post fields + signature straight to <code>/rpc</code>:</p>
   <pre><code>fakereum_transactionMessage [{ from?, to, value?, data?, nonce? }]   → { message, nonce }
 fakereum_sendTransaction    [{ to, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]

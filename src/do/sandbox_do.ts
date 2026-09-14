@@ -58,6 +58,15 @@ import {
 import { parseStateOverrides } from '../state_override'
 import { rpcSendMessageTx, rpcTransactionMessage, type MessageTxDeps } from '../message_tx'
 import { AccountKinds, type AccountKind } from '../account_kind'
+import {
+  importSources,
+  rpcImportBalance,
+  rpcImportMessage,
+  rpcImportSources,
+  type ImportDeps,
+  type ImportRecord,
+} from '../import_balance'
+import { renderImportPage } from '../ui/import'
 import { renderReceipt, renderTx, renderLog } from '../render'
 import { rpcInfosCall } from '../infos'
 import { corsHeaders, applyNoStore } from '../lib/cors'
@@ -102,6 +111,8 @@ export class EvmSandbox {
   private sandbox = new Sandbox()
   private impersonators = new Impersonators()
   private kinds: AccountKinds
+  /** addrKey -> cross-chain import record (one per account, forever). */
+  private imports = new Map<string, ImportRecord>()
   private executor: Executor | null = null
   private limiter: RateLimiter | null
   private etherscanKeyIdx = 0
@@ -118,11 +129,17 @@ export class EvmSandbox {
     // Code entries persist in DO storage (not subrequest-counted, survives
     // eviction); everything else stays on the in-memory TTL cache. Upstream
     // truth, not sandbox state — deliberately untouched by fakereum_clearSandbox.
-    this.fetcher = new Fetcher(this.upstream, this.cfg.cacheTtlMs, new Map(), {
-      get: (addr: string) => this.ctx.storage.get<PersistedCode>('codecache:' + addr),
-      put: (addr: string, entry: PersistedCode) =>
-        this.ctx.storage.put('codecache:' + addr, entry),
-    })
+    this.fetcher = new Fetcher(
+      this.upstream,
+      this.cfg.cacheTtlMs,
+      new Map(),
+      {
+        get: (addr: string) => this.ctx.storage.get<PersistedCode>('codecache:' + addr),
+        put: (addr: string, entry: PersistedCode) =>
+          this.ctx.storage.put('codecache:' + addr, entry),
+      },
+      this.cfg.balanceMultiplier,
+    )
     // Pinned per-account kinds (account_kind.ts): upstream truth about the
     // account, not sandbox state — deliberately untouched by fakereum_clearSandbox.
     this.kinds = new AccountKinds(
@@ -153,6 +170,9 @@ export class EvmSandbox {
 
     const kindRows = await storage.list<AccountKind>({ prefix: 'account:kind:' })
     for (const [key, kind] of kindRows) this.kinds.load(key.slice('account:kind:'.length), kind)
+
+    const importRows = await storage.list<ImportRecord>({ prefix: 'import:' })
+    for (const [key, rec] of importRows) this.imports.set(key.slice('import:'.length), rec)
 
     const impMap = await storage.get<{ map: Record<string, string> }>('impersonators')
     this.impersonators.loadJSON(impMap?.map)
@@ -294,6 +314,8 @@ export class EvmSandbox {
         resp = await this.serveUndo(path.slice('/undo/'.length), request)
       } else if (path === '/admin') {
         resp = this.serveAdmin(baseURL, origin)
+      } else if (path === '/import') {
+        resp = htmlResponse(renderImportPage({ cfg: this.cfg, sources: importSources(this.cfg) }))
       } else {
         resp = new Response('not found', { status: 404 })
       }
@@ -383,6 +405,12 @@ export class EvmSandbox {
         return this.rpcSendRawTransaction(req)
       case 'fakereum_accountKind':
         return this.rpcAccountKind(id, params)
+      case 'fakereum_importSources':
+        return rpcImportSources(req, this.cfg, this.importDeps())
+      case 'fakereum_importMessage':
+        return rpcImportMessage(req, this.cfg)
+      case 'fakereum_importBalance':
+        return rpcImportBalance(req, this.cfg, this.importDeps())
       case 'fakereum_transactionMessage':
         return rpcTransactionMessage(req, this.cfg, this.messageTxDeps(req))
       case 'fakereum_sendTransaction':
@@ -489,6 +517,32 @@ export class EvmSandbox {
     }
   }
 
+  /**
+   * Cross-chain import (import_balance.ts): credit lands in the overlay on top
+   * of whatever the account shows now (its sandbox balance, or upstream ×
+   * multiplier if it has none yet — which this materializes, so the balance is
+   * tracked here from now on). The import is a signed write by the account, so
+   * it pins the account's kind like a landed tx. Records live outside the
+   * clearable sandbox state: one import per account, ever.
+   */
+  private importDeps(): ImportDeps {
+    return {
+      imported: (addr) => this.imports.get(addrKey(addr)),
+      credit: async (addr, credit, record) => {
+        const key = addrKey(addr)
+        const ovl = this.overlay.get(key)
+        const current = ovl?.balanceSet ? ovl.balance : await this.fetcher.getBalance(addr)
+        const next = current + credit
+        const delta = this.overlay.setBalance(addr, next)
+        await this.persistOverlay(delta)
+        this.imports.set(key, record)
+        await this.ctx.storage.put('import:' + key, record)
+        if (rejectUpstreamSignersEnabled(this.cfg)) await this.kinds.pin(addr)
+        return next
+      },
+    }
+  }
+
   /** Sandbox-aware nonce / gas / fee lookups the signed-message methods fill defaults with. */
   private messageTxDeps(req: RpcRequest): MessageTxDeps {
     return {
@@ -520,7 +574,20 @@ export class EvmSandbox {
     await this.persistOverlay(delta)
     await this.persistSandboxTx(tx)
     if (signerKind) await this.kinds.pin(tx.signedBy, signerKind)
+    await this.takeOverBalance(tx.from)
     this.notifySandboxTx(tx)
+  }
+
+  /**
+   * From an account's first landed tx on, the sandbox tracks its native
+   * balance itself instead of showing upstream × multiplier. Execution almost
+   * always writes the sender's balance anyway (gas, value); this covers the
+   * zero-fee, zero-value case so the hand-over is unconditional.
+   */
+  private async takeOverBalance(addr: Hex): Promise<void> {
+    if (this.overlay.get(addrKey(addr))?.balanceSet) return
+    const delta = this.overlay.setBalance(addr, await this.fetcher.getBalance(addr))
+    await this.persistOverlay(delta)
   }
 
   // --- overlay-aware reads ------------------------------------------------
@@ -645,6 +712,22 @@ export class EvmSandbox {
     method: string,
   ): Promise<RpcResponse> {
     const merged = this.overlay.asStateOverrides() as Record<string, Record<string, unknown>>
+    // The upstream node sees real balances; the sandbox shows upstream ×
+    // multiplier for an account without a sandbox balance. Make the caller's
+    // `from` see its sandbox balance so value/gas checks match what a tx here
+    // would do.
+    const call = params[0]
+    const from = call && typeof call === 'object' ? (call as Record<string, unknown>)['from'] : undefined
+    if (this.cfg.balanceMultiplier > 1n && typeof from === 'string' && /^0x[0-9a-fA-F]{40}$/.test(from)) {
+      const key = checksumAddress(toAddress(from))
+      if (!this.overlay.get(addrKey(from))?.balanceSet) {
+        try {
+          merged[key] = mergeOverride(merged[key], { balance: toQuantity(await this.fetcher.getBalance(from as Hex)) })
+        } catch {
+          // best effort — the call proceeds against the real balance
+        }
+      }
+    }
     const caller = params[2]
     if (caller && typeof caller === 'object') {
       for (const [k, v] of Object.entries(caller as Record<string, unknown>)) {

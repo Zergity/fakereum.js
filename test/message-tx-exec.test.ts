@@ -75,13 +75,13 @@ function stubUpstream(nonces: Record<string, bigint>, balances: Record<string, b
 function setup(
   nonces: Record<string, bigint>,
   funded: Hex[],
-  opts: { upstreamBalances?: Record<string, bigint>; config?: Config } = {},
+  opts: { upstreamBalances?: Record<string, bigint>; config?: Config; multiplier?: bigint } = {},
 ) {
   const overlay = new Overlay()
   const alloc: Record<string, { balance: string }> = {}
   for (const a of funded) alloc[a] = { balance: toQuantity(ETH) }
   overlay.applyGenesis({ alloc })
-  const fetcher = new Fetcher(stubUpstream(nonces, opts.upstreamBalances), 0, new Map())
+  const fetcher = new Fetcher(stubUpstream(nonces, opts.upstreamBalances), 0, new Map(), undefined, opts.multiplier ?? 1n)
   const impersonators = new Impersonators()
   const kinds = new AccountKinds(
     (a) => fetcher.getBalanceUncached(a),
@@ -318,5 +318,29 @@ describe('replay guard + account kinds', () => {
     const res = await executor.applyTx(await rawTransfer(0))
     expect(res.signerKind).toBeUndefined()
     expect(kinds.peek(from)).toBeUndefined()
+  })
+})
+
+describe('balance multiplier in execution', () => {
+  const from = signer.address.toLowerCase() as Hex
+
+  it('an account with no sandbox balance spends from upstream × multiplier, then the overlay tracks it', async () => {
+    // 1 ETH upstream, ×1000 in the sandbox, guard off (distinct chain id): a 500 ETH transfer lands.
+    const { executor, overlay } = setup({ [from]: 0n }, [], { upstreamBalances: { [from]: ETH }, multiplier: 1000n })
+    const m = await signedMessageTx(signer, { to: TO, nonce: 0n, value: 500n * ETH, gasLimit: 21000n })
+    const { tx, changes } = await executor.applyMessageTx(m)
+    overlay.commit(changes)
+    expect(tx.status).toBe(1)
+    // baseFee 1 gwei * 21000 gas on top of the value, debited from the scaled balance
+    expect(overlay.get(addrKey(from))!.balance).toBe(1000n * ETH - 500n * ETH - 21000n * GWEI)
+    expect(overlay.get(addrKey(TO))!.balance).toBe(500n * ETH)
+  })
+
+  it('a sandbox balance, once set, is not scaled again', async () => {
+    const { executor, overlay } = setup({ [from]: 0n }, [from], { upstreamBalances: { [from]: ETH }, multiplier: 1000n })
+    // genesis gave the account exactly 1 ETH in the overlay; the upstream 1 ETH × 1000 must not leak in
+    const m = await signedMessageTx(signer, { to: TO, nonce: 0n, value: 2n * ETH, gasLimit: 21000n })
+    await expect(executor.applyMessageTx(m)).rejects.toThrow(/insufficient|funds|balance/i)
+    expect(overlay.get(addrKey(from))!.balance).toBe(ETH)
   })
 })

@@ -35,6 +35,18 @@ function assert(cond, msg) {
 const account = privateKeyToAccount(PK)
 const request = { from: account.address, to: RECIP, value: '0x38d7ea4c68000', data: '0x12345678' + 'ab'.repeat(8) }
 
+console.log('0. balances are upstream × multiplier until the account transacts')
+const infosHex = (await rpc('eth_call', [{ to: '0x000000000000000000000000000000000000fa4e' }, 'latest'])).slice(2)
+const infos = JSON.parse(Buffer.from(infosHex.slice(128, 128 + 2 * parseInt(infosHex.slice(64, 128), 16)), 'hex').toString())
+const upstreamBal = BigInt((await (await fetch(infos.upstreamRpc, { method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getBalance', params: [RECIP, 'latest'] }) })).json()).result)
+const sandboxBal = BigInt(await rpc('eth_getBalance', [RECIP, 'latest']))
+const kinds = await rpc('fakereum_accountKind', [RECIP])
+if (!kinds.pinned && upstreamBal > 0n) assert(sandboxBal === upstreamBal * 1000n, `dEaD shows ${sandboxBal} = 1000 × ${upstreamBal}`)
+else console.log('  skip: dEaD is pinned or empty upstream')
+const sources = await rpc('fakereum_importSources', [RECIP])
+assert(Array.isArray(sources.sources) && sources.sources.length >= 3 && sources.sources.every((s) => s.balance || s.error), `import sources answer: ${sources.sources.map((s) => s.name + '=' + (s.balance ?? s.error)).join(', ')}`)
+
 console.log('1. fakereum_transactionMessage (nonce read from `from`)')
 const nonceBefore = BigInt(await rpc('eth_getTransactionCount', [account.address, 'latest']))
 const balBefore = BigInt(await rpc('eth_getBalance', [account.address, 'latest']))

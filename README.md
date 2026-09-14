@@ -109,6 +109,7 @@ mirror the Go flags:
 | `/tx/<hash>` · `/address/<addr>` | HTML explorer |
 | `/txs` · `/accounts` | list pages |
 | `POST /undo/{last\|<hash>}` | LIFO undo |
+| `/import` | import a native balance from another chain, once per account (EIP-191) |
 | `/admin` | impersonation + clear-sandbox tools (EIP-712, admin-gated) |
 
 Discovery: `eth_call` to `0x…fa4e` returns the ABI-encoded sandbox info string
@@ -195,6 +196,46 @@ account that empties itself stays `upstream`. With the guard off (distinct
 chain id) nothing can replay, so the query answers `sandbox` for everyone
 without consulting upstream.
 
+### Balances: upstream × 1000, and cross-chain import
+
+An account that has no balance of its own in the sandbox yet is shown holding
+**its upstream native balance × `BALANCE_MULTIPLIER`** (default 1000): that
+is what `eth_getBalance` answers, what a transaction here can spend, and what
+forwarded `eth_call` / `eth_estimateGas` see for their `from`. The scaling is
+applied where the sandbox materializes a balance from upstream
+(`Fetcher.getBalance`); the raw upstream read the replay guard uses stays
+unscaled. From the account's first landed transaction on (or its import,
+below), the overlay holds the balance and upstream no longer matters — the
+commit step sets it explicitly if execution happened to leave it untouched.
+The `/address/<addr>` page marks a figure that is still scaled from upstream
+"(upstream × 1000)". Set `BALANCE_MULTIPLIER=1` to turn this off.
+
+Funds on **another** EVM chain can be brought in once per account through
+`/import` (`src/import_balance.ts`, `src/lib/import_chains.ts`). Supported
+sources: Ethereum Mainnet, Arbitrum One, Base, Robinhood Chain, minus the
+sandbox's own upstream (that one is automatic). The page connects a wallet,
+lists the account's balance on each source, and after a `personal_sign` of
+
+```
+Fakereum Import to <networkName>
+Account: <EIP-55 address>
+From: <chain name> (chain id <id>)
+```
+
+credits `balance × multiplier` on top of whatever the account shows now. The
+wallet may be on any chain to sign; the message is not a transaction anywhere.
+An account can import **once, from one chain, ever**: the record lives under
+`import:<address>` next to the account kinds and survives
+`fakereum_clearSandbox`. A zero source balance or a failed source read is
+refused without consuming the import. The import counts as a signed write by
+the account and pins its kind like a landed tx. RPC shape:
+
+| method | params | result |
+|---|---|---|
+| `fakereum_importSources` | `[address]` | `{ account, multiplier, imported, sources: [{chainId, name, symbol, balance, credit} \| {…, error}] }` |
+| `fakereum_importMessage` | `[{account, chainId}]` | `{ message }` |
+| `fakereum_importBalance` | `[{account, chainId, signature}]` | `{ account, chainId, chain, balance, credit, newBalance }` |
+
 ### How a dapp should use it
 
 The `fakereum` skill under `.claude/skills/` carries the code; this is the
@@ -227,7 +268,8 @@ In both, when the user sends, the dapp asks `fakereum_accountKind [address]`
   to lose to a replay. The transaction itself goes through the signed-message
   path in the fork-aware setup, or through the wallet's `eth_sendTransaction`
   when the wallet is repointed. The account needs FETH inside the fork for
-  gas, and a later deposit on the real chain does not move it back to 3a.
+  gas (import some from another chain, or receive a transfer), and a later
+  deposit on the real chain does not move it back to 3a.
 
 ### Block tag
 

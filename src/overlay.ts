@@ -222,6 +222,24 @@ export class Overlay {
   }
 
   /**
+   * Set an account's sandbox balance outright (materializing the account if
+   * needed). Used when the sandbox takes over tracking a balance: at the
+   * account's first landed tx if execution left it untouched, and for
+   * cross-chain imports.
+   */
+  setBalance(addr: Hex, balance: bigint): OverlayDelta {
+    const key = addrKey(addr)
+    let a = this.accounts.get(key)
+    if (!a) {
+      a = emptyAccount()
+      this.accounts.set(key, a)
+    }
+    a.balance = balance
+    a.balanceSet = true
+    return { updated: new Set([key]), deleted: new Set() }
+  }
+
+  /**
    * Rewind the overlay to a tx's pre-state using its diff (undo.go
    * ApplyReverseDiff). PreOverlay* flags decide restore-Pre vs delete-entry.
    */
