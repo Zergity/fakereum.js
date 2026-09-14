@@ -203,7 +203,8 @@ export class Executor {
       : undefined
 
     const { r, s, yParity } = splitSignature(m.signature)
-    const base = { nonce: m.nonce, to: m.to, value: m.value, data: m.data, gasLimit: m.gasLimit, r, s }
+    // No `to` = contract creation; the data is the init code.
+    const base = { nonce: m.nonce, to: m.to ?? undefined, value: m.value, data: m.data, gasLimit: m.gasLimit, r, s }
     const opts = { common: this.common, freeze: false }
     const tx: RunnableTx = isLegacyFee(m.fee)
       ? createLegacyTx(

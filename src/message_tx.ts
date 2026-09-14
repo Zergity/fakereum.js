@@ -8,7 +8,8 @@
 //     -> tx hash              rebuilds the text, recovers the signer, executes
 //
 // Field names and encodings follow eth_sendTransaction: numbers are 0x-hex
-// quantities, `data` is 0x-hex bytes. The signature covers nonce, to, value
+// quantities, `data` is 0x-hex bytes; omit `to` for a contract creation (the
+// data is then the init code). The signature covers nonce, to, value
 // and data (see lib/eip191.ts). Gas limit and fee terms are not signed — they
 // are taken from the params and defaulted like a wallet would (gas from the
 // local estimate, fee = upstream gas price as an EIP-1559 cap, no tip). A
@@ -52,7 +53,8 @@ export interface MessageTxRequest extends MessageTxFields {
 /** Sandbox-aware lookups both methods use to fill omitted fields. */
 export interface MessageTxDeps {
   nonce: (from: Hex) => Promise<bigint>
-  estimateGas: (call: { from: Hex; to: Hex; value: Hex; data: Hex }) => Promise<bigint>
+  /** `to` is absent for a contract creation. */
+  estimateGas: (call: { from: Hex; to?: Hex; value: Hex; data: Hex }) => Promise<bigint>
   gasPrice: () => Promise<bigint>
 }
 
@@ -77,10 +79,11 @@ function quantity(o: Record<string, unknown>, key: string): Parsed<bigint | unde
   return { ok: true, value: toBigInt(v) }
 }
 
-/** Every field either method accepts; only `to` is mandatory at this stage. */
+/** Every field either method accepts; nothing is mandatory at this stage. */
 export interface ParsedParams {
   from?: Hex
-  to: Hex
+  /** null = contract creation */
+  to: Hex | null
   value: bigint
   data: Uint8Array
   nonce?: bigint
@@ -90,11 +93,14 @@ export interface ParsedParams {
 
 export function parseParams(req: RpcRequest): Parsed<ParsedParams> {
   const o = firstParam(req)
-  if (!o) return bad('expected [{to, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, …}]')
+  if (!o) return bad('expected [{to?, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, …}]')
 
   const to = o['to']
-  if (typeof to !== 'string' || !ADDRESS_RE.test(to)) return bad('to must be a 20-byte 0x address')
-  const out: ParsedParams = { to: toAddress(to), value: 0n, data: new Uint8Array(0) }
+  const out: ParsedParams = { to: null, value: 0n, data: new Uint8Array(0) }
+  if (to !== undefined && to !== null && to !== '') {
+    if (typeof to !== 'string' || !ADDRESS_RE.test(to)) return bad('to must be a 20-byte 0x address, or omitted for a contract creation')
+    out.to = toAddress(to)
+  }
 
   const from = o['from']
   if (from !== undefined && from !== null) {
@@ -190,7 +196,12 @@ export async function rpcSendMessageTx(req: RpcRequest, cfg: Config, deps: SendM
     // Unsigned gas terms: what a wallet would have filled in for this sender.
     const gasLimit =
       p.gasLimit ??
-      (await deps.estimateGas({ from: signer, to: p.to, value: toQuantity(p.value), data: bytesToHex(p.data) }))
+      (await deps.estimateGas({
+        from: signer,
+        ...(p.to ? { to: p.to } : {}),
+        value: toQuantity(p.value),
+        data: bytesToHex(p.data),
+      }))
     const fee: MessageTxFee = p.fee ?? { maxFeePerGas: await deps.gasPrice(), maxPriorityFeePerGas: 0n }
     const hash = await deps.apply({ ...fields, signer, message, signature, gasLimit, fee })
     return makeResult(req.id, hash)

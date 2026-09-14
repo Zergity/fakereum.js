@@ -84,6 +84,16 @@ const spent = balBefore - balAfter
 const value = BigInt(request.value)
 assert(spent > value && spent <= value + BigInt(rc.gasUsed) * BigInt(tx.maxFeePerGas), 'sender paid value + gas within the cap')
 
+console.log('3b. contract creation via signed message')
+const init = '0x602a60005260206000f3' // returns the 32-byte word 42 as runtime code
+const cm = await rpc('fakereum_transactionMessage', [{ from: account.address, data: init }])
+assert(cm.message.split('\n')[1] === 'To: new contract', 'To line reads "new contract"')
+const chash = await rpc('fakereum_sendTransaction', [{ data: init, nonce: cm.nonce, signature: await account.signMessage({ message: cm.message }) }])
+const crc = await rpc('eth_getTransactionReceipt', [chash])
+assert(crc.status === '0x1' && /^0x[0-9a-fA-F]{40}$/.test(crc.contractAddress || ''), `deployed at ${crc.contractAddress}`)
+const code = await rpc('eth_getCode', [crc.contractAddress, 'latest'])
+assert(code === '0x' + '00'.repeat(31) + '2a', 'runtime code is the 32-byte word 42')
+
 console.log('4. tx page')
 const page = await fetch(`${BASE}/tx/${hash}`).then((r) => r.text())
 assert(page.includes('Signed message (EIP-191)'), 'page shows the signed message block')
@@ -105,7 +115,7 @@ assert(['sandbox', 'upstream'].includes(k1.kind), `kind after a tx: ${k1.kind} (
 assert(k1.pinned === k1.replayGuard, 'a tx pins the kind exactly when the replay guard is on')
 
 console.log('8. undo')
-const undone = await rpc('fakereum_undoLastTx')
-assert(undone === hash, 'undo removed the message tx')
+assert((await rpc('fakereum_undoLastTx')) === chash, 'undo removed the deploy')
+assert((await rpc('fakereum_undoLastTx')) === hash, 'undo removed the message tx')
 
 console.log('\nALL OK')

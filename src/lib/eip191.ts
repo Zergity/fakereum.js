@@ -12,7 +12,8 @@
 // The message text is the contract between client and server. Byte for byte:
 //
 //   Fakereum Tx #<nonce> on <networkName>
-//   To: <EIP-55 checksummed address>
+//   To: <EIP-55 checksummed address>          — or "To: new contract" for a contract creation,
+//                                                 the Data line then summarizing the init code
 //   Value: <decimal, whole native units, up to 10 fractional digits>   (only when value > 0)
 //   Data: 0x<first 4 bytes> and <n> bytes with hash 0x<keccak256(data[4:])>  (only when data is non-empty;
 //                                                                            the " and … hash …" tail only
@@ -33,10 +34,14 @@ export const VALUE_GRANULARITY_WEI = 10n ** BigInt(18 - VALUE_DECIMALS)
 /** Everything the signed message covers. */
 export interface MessageTxFields {
   nonce: bigint
-  to: Hex
+  /** Recipient, or null for a contract creation (data = init code). */
+  to: Hex | null
   value: bigint
   data: Uint8Array
 }
+
+/** The To line's text for a contract creation. */
+export const CREATE_TO_LINE = 'new contract'
 
 /** Decimal with `decimals` fractional digits, trailing zeros (and a bare ".") dropped. */
 function formatUnits(amount: bigint, decimals: number): string {
@@ -75,7 +80,7 @@ export function formatMessageData(data: Uint8Array): string {
 
 /** The exact text a wallet must sign (personal_sign / EIP-191) for these fields. */
 export function transactionMessage(networkName: string, f: MessageTxFields): string {
-  const lines = [`Fakereum Tx #${f.nonce} on ${networkName}`, `To: ${checksumAddress(f.to)}`]
+  const lines = [`Fakereum Tx #${f.nonce} on ${networkName}`, `To: ${f.to ? checksumAddress(f.to) : CREATE_TO_LINE}`]
   if (f.value > 0n) lines.push(`Value: ${formatMessageValue(f.value)}`)
   if (f.data.length > 0) lines.push(`Data: ${formatMessageData(f.data)}`)
   return lines.join('\n')

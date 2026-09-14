@@ -129,8 +129,8 @@ impersonation NAT as a raw tx. Two methods (`src/message_tx.ts`,
 
 | method | params | result |
 |---|---|---|
-| `fakereum_transactionMessage` | `[{from?, to, value?, data?, nonce?}]` | `{ message, nonce }` — the text to sign; nonce read from the sandbox when omitted (needs `from`) |
-| `fakereum_sendTransaction` | `[{to, value?, data?, nonce, gas?, gasPrice? \| maxFeePerGas?, maxPriorityFeePerGas?, signature}]` | tx hash |
+| `fakereum_transactionMessage` | `[{from?, to?, value?, data?, nonce?}]` | `{ message, nonce }` — the text to sign; nonce read from the sandbox when omitted (needs `from`); omit `to` to deploy |
+| `fakereum_sendTransaction` | `[{to?, value?, data?, nonce, gas?, gasPrice? \| maxFeePerGas?, maxPriorityFeePerGas?, signature}]` | tx hash |
 
 Fields are named and encoded as in `eth_sendTransaction` (0x-hex quantities,
 0x-hex `data`). Omitted gas terms are filled the way a wallet would: `gas`
@@ -140,9 +140,9 @@ newline:
 
 ```
 Fakereum Tx #13 on <networkName>
-To: <EIP-55 address>
+To: <EIP-55 address>                           ← "To: new contract" for a deploy (no `to`)
 Value: 0.001                                   ← only when value > 0
-Data: 0x12345678 and 68 bytes with hash 0x…    ← only when data is non-empty
+Data: 0x12345678 and 68 bytes with hash 0x…    ← only when data is non-empty (init code for a deploy)
 ```
 
 The header carries the nonce and the sandbox's `networkName` (the discovery

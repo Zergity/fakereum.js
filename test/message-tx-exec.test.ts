@@ -96,7 +96,7 @@ const GWEI = 10n ** 9n
 /** Sign a message tx. Unsigned gas terms default to 100k gas at a 1559 cap of 2 gwei, no tip. */
 async function signedMessageTx(
   account: typeof signer,
-  over: Partial<MessageTxFields> & { to: Hex; nonce: bigint } & Partial<Pick<MessageTx, 'gasLimit' | 'fee'>>,
+  over: Partial<MessageTxFields> & { to: Hex | null; nonce: bigint } & Partial<Pick<MessageTx, 'gasLimit' | 'fee'>>,
 ): Promise<MessageTx> {
   const { gasLimit = 100_000n, fee = { maxFeePerGas: 2n * GWEI, maxPriorityFeePerGas: 0n }, ...rest } = over
   const f: MessageTxFields = { value: 0n, data: new Uint8Array(0), ...rest }
@@ -228,6 +228,30 @@ describe('Executor.applyMessageTx', () => {
     impersonators.set(impersonator.address as Hex, a)
     const m = await signedMessageTx(signer, { to: TO, nonce: 0n })
     await expect(executor.applyMessageTx(m)).rejects.toThrow(/impersonatee/)
+  })
+})
+
+describe('Executor.applyMessageTx contract creation', () => {
+  it('deploys when `to` is null: the data is init code, the receipt names the contract', async () => {
+    const from = signer.address.toLowerCase() as Hex
+    const { executor, overlay } = setup({ [from]: 4n }, [from])
+    // init code: PUSH1 0x2a PUSH1 0 MSTORE PUSH1 0x20 PUSH1 0 RETURN -> "runtime" = the 32-byte word 42
+    // (returns 32 bytes starting at memory 0: that word becomes the deployed code)
+    const init = hexToBytes('0x602a60005260206000f3')
+    const m = await signedMessageTx(signer, { to: null, nonce: 4n, data: init, gasLimit: 100_000n })
+    const { tx, changes } = await executor.applyMessageTx(m)
+    overlay.commit(changes)
+    expect(tx.status).toBe(1)
+    expect(tx.to).toBeNull()
+    expect(tx.contractAddress).toMatch(/^0x[0-9a-f]{40}$/)
+    expect(tx.createdContracts).toEqual([tx.contractAddress])
+    expect(tx.createdVia).toEqual({ [tx.contractAddress!]: 'tx' })
+    expect(tx.input).toBe('0x602a60005260206000f3')
+    expect(tx.signedMessage!.message.split('\n')[1]).toBe('To: new contract')
+    const code = overlay.get(addrKey(tx.contractAddress!))!.code
+    expect(code.length).toBe(32)
+    expect(code[31]).toBe(42)
+    expect(parseTransaction(tx.raw).to).toBeUndefined()
   })
 })
 

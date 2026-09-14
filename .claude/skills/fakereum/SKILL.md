@@ -316,8 +316,8 @@ limit and fee terms are passed unsigned alongside (it's a test sandbox — defau
 like a wallet would). The sandbox then runs a normal tx from the signer.
 
 ```
-fakereum_transactionMessage [{ from?, to, value?, data?, nonce? }]                → { message, nonce }
-fakereum_sendTransaction    [{ to, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
+fakereum_transactionMessage [{ from?, to?, value?, data?, nonce? }]               → { message, nonce }
+fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
                             → tx hash
 ```
 
@@ -326,12 +326,15 @@ header uses the nonce and `infos.networkName`, so you can also build it yourself
 
 ```
 Fakereum Tx #13 on Fake Arbitrum One
-To: 0xAb58…eC9B                                  ← EIP-55 checksummed
+To: 0xAb58…eC9B                                  ← EIP-55 checksummed; "To: new contract" for a deploy
 Value: 0.001                                     ← only when value > 0
 Data: 0xa9059cbb and 64 bytes with hash 0x…      ← only when data is non-empty
 ```
 
 Rules that bite:
+
+- **Contract creation works:** omit `to` (or pass `null`) and put the init code in `data`; the
+  To line reads `new contract` and the receipt carries `contractAddress` as usual.
 
 - **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
   from the first call's result (or `eth_getTransactionCount`). `gas`, `gasPrice` or

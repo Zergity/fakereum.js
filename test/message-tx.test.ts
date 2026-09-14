@@ -73,6 +73,12 @@ describe('transactionMessage', () => {
     expect(transactionMessage(NETWORK, fields({ nonce: 0n })).split('\n')[0]).toBe(`Fakereum Tx #0 on ${NETWORK}`)
   })
 
+  it('renders a contract creation as "To: new contract" with the init code summarized', () => {
+    const init = hexToBytes('0x6080604052' + 'cc'.repeat(40))
+    const msg = transactionMessage(NETWORK, fields({ to: null, data: init }))
+    expect(msg.split('\n')).toEqual([HEADER, 'To: new contract', `Data: ${formatMessageData(init)}`])
+  })
+
   it('checksums the address and prints the value line', () => {
     const to = toAddress('0xab5801a7d398351b8be11c439e05c5b3259aec9b')
     expect(transactionMessage(NETWORK, fields({ to, value: ETH / 1000n }))).toBe(
@@ -139,6 +145,14 @@ describe('parseParams', () => {
     expect(r2.ok && r2.value.fee).toEqual({ gasPrice: 3n * GWEI })
     const r3 = parseParams(req('x', { ...json(f), maxFeePerGas: toQuantity(GWEI) }))
     expect(r3.ok && r3.value.fee).toEqual({ maxFeePerGas: GWEI, maxPriorityFeePerGas: 0n })
+  })
+
+  it('treats a missing, null or empty `to` as a contract creation', () => {
+    for (const to of [undefined, null, '']) {
+      const r = parseParams(req('x', { to, data: '0x6080', nonce: '0x1' }))
+      expect(r.ok && r.value.to).toBeNull()
+    }
+    expect(parseParams(req('x', { to: '0x12', data: '0x6080' }))).toMatchObject({ ok: false, error: /omitted for a contract creation/ })
   })
 
   it('accepts `input` as an alias of `data` and leaves nonce undefined when omitted', () => {
@@ -243,6 +257,21 @@ describe('rpcSendMessageTx', () => {
       gasLimit: 60000n,
       fee: { maxFeePerGas: GWEI / 10n, maxPriorityFeePerGas: 0n },
     })
+  })
+
+  it('estimates a contract creation without a `to` and hands the executor to=null', async () => {
+    const create = fields({ to: null, data: hexToBytes('0x6080') })
+    const signature = (await account.signMessage({ message: transactionMessage(NETWORK, create) })) as Hex
+    const calls: unknown[] = []
+    let m: Record<string, unknown> | null = null
+    const resp = await send(
+      { data: '0x6080', nonce: '0xc', signature },
+      { estimateGas: async (c) => (calls.push(c), 53000n), apply: async (mm) => ((m = mm as unknown as Record<string, unknown>), HASH) },
+    )
+    expect(resp.error).toBeUndefined()
+    expect(calls).toEqual([{ from: account.address.toLowerCase(), value: '0x0', data: '0x6080' }])
+    expect(m!['to']).toBeNull()
+    expect(m!['signer']).toBe(account.address.toLowerCase())
   })
 
   it('takes explicit gas terms from the params without touching the estimate', async () => {
