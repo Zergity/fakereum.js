@@ -36,6 +36,7 @@ import {
 import { chainName, upstreamExplorerForChain } from '../lib/chains'
 import { isHistoricalBlockTag } from '../lib/blocktag'
 import { Upstream } from '../upstream'
+import { HeadTimeForwarder, isHeadTag, patchHeadBlock } from '../head'
 import { Fetcher, type PersistedCode } from '../fetcher'
 import { Overlay, type OverlayDelta } from '../overlay'
 import { Sandbox, parseLogFilter, logMatches } from '../sandbox'
@@ -93,6 +94,7 @@ interface WsAttachment {
 export class EvmSandbox {
   private cfg: Config
   private upstream: Upstream
+  private headTime: HeadTimeForwarder
   private fetcher: Fetcher
   private overlay = new Overlay()
   private sandbox = new Sandbox()
@@ -109,6 +111,7 @@ export class EvmSandbox {
   ) {
     this.cfg = loadConfig(env)
     this.upstream = new Upstream(this.cfg.upstreamRpcs)
+    this.headTime = new HeadTimeForwarder(this.upstream)
     // Code entries persist in DO storage (not subrequest-counted, survives
     // eviction); everything else stays on the in-memory TTL cache. Upstream
     // truth, not sandbox state — deliberately untouched by fakereum_clearSandbox.
@@ -391,6 +394,8 @@ export class EvmSandbox {
       }
       case 'eth_getLogs':
         return this.rpcGetLogs(req, params)
+      case 'eth_getBlockByNumber':
+        return this.rpcGetBlockByNumber(req, params)
       case 'fakereum_undoLastTx':
         return this.rpcUndoLast(id)
       case 'fakereum_undoBackTo':
@@ -535,7 +540,26 @@ export class EvmSandbox {
     }
   }
 
-  /** Forward eth_call/estimateGas to upstream with the overlay as stateOverrides. */
+  /**
+   * eth_getBlockByNumber for the head tag (latest/pending): the upstream block
+   * with its timestamp moved to the head clock, so a consumer reading the head
+   * block's time sees the same value contracts see in block.timestamp. Any
+   * other tag passes through untouched.
+   */
+  private async rpcGetBlockByNumber(req: RpcRequest, params: unknown[]): Promise<RpcResponse | null> {
+    if (!isHeadTag(params[0])) return null
+    const resp = await this.upstream.forward(req)
+    resp.jsonrpc = '2.0'
+    resp.id = req.id
+    if (resp.result !== undefined && !resp.error) resp.result = patchHeadBlock(resp.result)
+    return resp
+  }
+
+  /**
+   * Forward eth_call/estimateGas to upstream with the overlay as stateOverrides
+   * and the head clock as blockOverrides.time (HeadTimeForwarder falls back to
+   * the 3-param shape on nodes that refuse the 4th positional).
+   */
   private async forwardWithOverlayOverrides(
     req: RpcRequest,
     params: unknown[],
@@ -550,7 +574,7 @@ export class EvmSandbox {
         merged[key] = mergeOverride(merged[key], v as Record<string, unknown>)
       }
     }
-    const resp = await this.upstream.call(method, [params[0], 'latest', merged])
+    const resp = await this.headTime.call(method, [params[0], 'latest', merged])
     resp.jsonrpc = '2.0'
     resp.id = req.id
     return resp

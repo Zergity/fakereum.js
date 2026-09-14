@@ -68,6 +68,9 @@ new_sqlite_classes = ["EvmSandbox"]
 #                             eth_call-with-stateOverrides shape fakereum
 #                             forwards (the hottest method in stateOverride
 #                             mode) — see the per-chain notes for dropped ones.
+#                             The 4th positional (blockOverrides.time, the head
+#                             clock — see src/head.ts) is optional: an endpoint
+#                             refusing it falls back to 3 params automatically.
 #   UPSTREAM_ETHERSCAN        upstream explorer API base (Etherscan v2 or a
 #                             Blockscout Etherscan-compat endpoint).
 #   UPSTREAM_ETHERSCAN_STYLE  "etherscan" | "blockscout"; unset = sniffed from

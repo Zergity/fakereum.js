@@ -135,6 +135,32 @@ honor it with fork semantics:
   mutation, so they pass straight through to upstream. No block-tag decision
   costs a subrequest.
 
+### Head clock
+
+The sandbox tip's `block.timestamp` is the later of the upstream head's own
+timestamp and wall clock, not whatever the upstream node's latest header says.
+Two things make that header drift from real time: a lagging failover node can
+sit tens of seconds behind the chain, and a chain that only mints blocks when
+there is traffic keeps its last header's time until the next tx lands. Either
+way a contract checking a deadline, a vesting cliff or an auction end sees a
+clock that stopped. Every consumer gets the corrected clock:
+
+- **`eth_sendRawTransaction`** and the local-mode `eth_call` / `eth_estimateGas`
+  execute against a block context carrying it (the receipt's `blockTime` too).
+- **Forwarded `eth_call` / `eth_estimateGas`** (default `stateOverride` mode)
+  carry it as geth's 4th positional `blockOverrides: { time }`. Nitro, geth and
+  reth all honor it. A node that refuses the 4-param shape (`-32602 too many
+  arguments`, drpc's `expect 1 required and 3 optional params`) gets the plain
+  3-param call instead, and that refusal is remembered per method for ten
+  minutes — but only once the plain retry is accepted, so a caller's own
+  malformed request never switches the feature off.
+- **`eth_getBlockByNumber`** at `latest` / `pending` reports the upstream block
+  with its `timestamp` moved to the same clock, so a UI reading the head block's
+  time agrees with what contracts see. Fixed blocks, `safe` and `finalized`
+  pass through untouched.
+
+The block **number** never moves — only the clock. See `src/head.ts`.
+
 ## Status & known limitations
 
 **Verified locally** (TS 5.9, EthereumJS v10.1.2, against live Ethereum mainnet):

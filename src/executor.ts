@@ -24,6 +24,7 @@ import type { Config, DeployMethod, StoredLog, StoredTx, TxDiff } from './types'
 import type { Overlay, WorkingChange } from './overlay'
 import { MissRecorder, type Fetcher } from './fetcher'
 import { ForkingStateManager } from './statemanager'
+import { headTime } from './head'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
 import { decodeRevertReason } from './ui/decode'
@@ -127,8 +128,12 @@ export class Executor {
     }
 
     // Always fetch the live tip (uncached): the executed tx must see the true
-    // current block.number/block.timestamp, not a value cached up to ttlMs ago.
-    const block = await this.fetcher.getLatestBlockUncached()
+    // current block.number, not a value cached up to ttlMs ago. Its timestamp
+    // is the head clock (see head.ts): wall clock, never behind the upstream
+    // header — a lagging node or a chain idle between txs must not hand the tx
+    // a stopped block.timestamp.
+    const tip = await this.fetcher.getLatestBlockUncached()
+    const block = { ...tip, time: headTime(tip.time) }
 
     // baseFee-lowering: if the signed maxFeePerGas is below the upstream
     // baseFee, lower the block baseFee to the cap so the tx still lands.
@@ -382,12 +387,11 @@ export class Executor {
     const gasLimit = args.gas && args.gas > 0n ? args.gas : block.gasLimit
 
     // Give the call a block context so TIMESTAMP/NUMBER read sensibly instead of
-    // the EVM's default zero-block. block.timestamp uses the current wall clock:
-    // the upstream latest-block time can be stale (cached up to cacheTtlMs) and
-    // callers reading block.timestamp expect "now". Everything else mirrors the
-    // latest block.
-    const nowSec = BigInt(Math.floor(Date.now() / 1000))
-    const ejBlock = this.buildBlock({ ...block, time: nowSec }, block.baseFee)
+    // the EVM's default zero-block. block.timestamp is the head clock (head.ts):
+    // the upstream latest-block time can be stale (cached up to cacheTtlMs, a
+    // lagging node, an idle chain) and callers reading block.timestamp expect
+    // "now". Everything else mirrors the latest block.
+    const ejBlock = this.buildBlock({ ...block, time: headTime(block.time) }, block.baseFee)
 
     const res = await evm.runCall({
       caller: args.from ? createAddressFromString(args.from.toLowerCase()) : createAddressFromString(ZERO_ADDR),
