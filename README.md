@@ -147,10 +147,9 @@ Data: 0x12345678 and 68 bytes with hash 0x…    ← only when data is non-empty
 
 The header carries the nonce and the sandbox's `networkName` (the discovery
 payload's), so a client can build the text offline. `Value` is in whole
-native units with at most 10 fractional digits, trailing zeros dropped, so
-the wei amount must be a multiple of 1e8 (the RPC refuses anything finer —
-the text could not express it). `Data` shows the first four bytes; when more
-follow, their count and the keccak256 of those trailing bytes.
+native units with up to 18 fractional digits, trailing zeros dropped — exact
+for any wei amount. `Data` shows the first four bytes; when more follow,
+their count and the keccak256 of those trailing bytes.
 
 What differs from a raw tx:
 

@@ -215,8 +215,8 @@ async function sendViaSignedMessage(tx: { to: string; value?: string; data?: str
 }
 ```
 
-Round `value` to a multiple of 1e8 wei first: the message prints it with 10 decimals and the
-sandbox refuses anything finer. Full message format and rules in the next-but-one section.
+The Value line prints the amount in native units with up to 18 decimals, so any wei value is
+exact. Full message format and rules in the next-but-one section.
 
 **3a. `kind === 'upstream'` → signed messages only, and never EIP-712.** In both setups every
 send goes through `sendViaSignedMessage`. Funding is not an issue: the account already holds
@@ -339,8 +339,6 @@ Rules that bite:
 - **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
   from the first call's result (or `eth_getTransactionCount`). `gas`, `gasPrice` or
   `maxFeePerGas`/`maxPriorityFeePerGas` are optional, 0x-hex as in `eth_sendTransaction`.
-- **`value` must be a multiple of 1e8 wei** — the line shows at most 10 decimals and the
-  server refuses an amount it can't print (`-32602`). Round your amounts.
 - **It is a real tx.** Nonce must match, and the sender pays `gas * price + value` in FETH
   exactly as with a raw tx (the sandbox lowers its baseFee to your cap if that is below it,
   as it does for raw txs).

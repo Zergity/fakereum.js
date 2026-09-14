@@ -7,7 +7,6 @@ import {
   messageDigest,
   recoverMessageSigner,
   transactionMessage,
-  VALUE_GRANULARITY_WEI,
   type MessageTxFields,
 } from '../src/lib/eip191'
 import { parseParams, rpcSendMessageTx, rpcTransactionMessage, type MessageTxDeps } from '../src/message_tx'
@@ -52,18 +51,18 @@ const deps: MessageTxDeps = {
 }
 
 describe('formatMessageValue', () => {
-  it('prints whole units and trims trailing zeros of a 10-digit fraction', () => {
+  it('prints whole units and trims trailing zeros, exact to the wei (18 decimals)', () => {
     expect(formatMessageValue(0n)).toBe('0')
     expect(formatMessageValue(ETH)).toBe('1')
     expect(formatMessageValue(ETH / 1000n)).toBe('0.001')
     expect(formatMessageValue(12n * ETH + ETH / 2n)).toBe('12.5')
-    expect(formatMessageValue(VALUE_GRANULARITY_WEI)).toBe('0.0000000001')
-    expect(formatMessageValue(1234567890123n * VALUE_GRANULARITY_WEI)).toBe('123.4567890123')
+    expect(formatMessageValue(1n)).toBe('0.000000000000000001')
+    expect(formatMessageValue(ETH + 1n)).toBe('1.000000000000000001')
+    expect(formatMessageValue(123456789012345678901n)).toBe('123.456789012345678901')
   })
 
-  it('rejects amounts finer than 10 decimals', () => {
-    expect(() => formatMessageValue(1n)).toThrow(/multiple of 100000000 wei/)
-    expect(() => formatMessageValue(VALUE_GRANULARITY_WEI + 1n)).toThrow()
+  it('rejects a negative amount only', () => {
+    expect(() => formatMessageValue(-1n)).toThrow(/negative/)
   })
 })
 
@@ -118,7 +117,7 @@ describe('signature round-trip', () => {
   it('binds every field: value, nonce, data, to, network', async () => {
     const sig = await account.signMessage({ message: transactionMessage(NETWORK, f) })
     const variants = [
-      transactionMessage(NETWORK, { ...f, value: f.value + VALUE_GRANULARITY_WEI }),
+      transactionMessage(NETWORK, { ...f, value: f.value + 1n }),
       transactionMessage(NETWORK, { ...f, nonce: 13n }),
       transactionMessage(NETWORK, { ...f, data: hexToBytes('0xa9059cbb' + '00'.repeat(63) + '01') }),
       transactionMessage(NETWORK, { ...f, to: toAddress('0x' + '22'.repeat(20)) }),
@@ -208,10 +207,9 @@ describe('rpcTransactionMessage', () => {
     expect(resp.error?.message).toMatch(/from/)
   })
 
-  it('refuses a value the message cannot express', async () => {
+  it('prints a 1 wei value exactly', async () => {
     const resp = await rpcTransactionMessage(req('fakereum_transactionMessage', { ...json(fields()), value: '0x1' }), cfg, deps)
-    expect(resp.error?.code).toBe(-32602)
-    expect(resp.error?.message).toMatch(/multiple of/)
+    expect((resp.result as { message: string }).message.split('\n')[2]).toBe('Value: 0.000000000000000001')
   })
 })
 

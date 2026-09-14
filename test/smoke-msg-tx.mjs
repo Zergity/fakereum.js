@@ -103,8 +103,8 @@ const again = await rpcRaw('fakereum_sendTransaction', [{ ...fields, signature }
 assert(/already known|nonce/i.test(again.error?.message ?? ''), 'resending the same signed message is refused: ' + again.error?.message)
 
 console.log('6. validation')
-const bad = await rpcRaw('fakereum_transactionMessage', [{ ...fields, value: '0x1' }])
-assert(bad.error?.code === -32602, '1 wei cannot be printed with 10 decimals')
+const one = await rpc('fakereum_transactionMessage', [{ ...fields, value: '0x1' }])
+assert(one.message.split('\n')[2] === 'Value: 0.000000000000000001', '1 wei prints exactly with 18 decimals')
 const { nonce: _n, ...noNonce } = fields
 const missing = await rpcRaw('fakereum_sendTransaction', [{ ...noNonce, signature }])
 assert(missing.error?.code === -32602 && /nonce/.test(missing.error.message), 'sendTransaction insists on the nonce')

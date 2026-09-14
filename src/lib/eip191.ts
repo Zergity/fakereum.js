@@ -14,7 +14,7 @@
 //   Fakereum Tx #<nonce> on <networkName>
 //   To: <EIP-55 checksummed address>          — or "To: new contract" for a contract creation,
 //                                                 the Data line then summarizing the init code
-//   Value: <decimal, whole native units, up to 10 fractional digits>   (only when value > 0)
+//   Value: <decimal, whole native units, up to 18 fractional digits>   (only when value > 0)
 //   Data: 0x<first 4 bytes> and <n> bytes with hash 0x<keccak256(data[4:])>  (only when data is non-empty;
 //                                                                            the " and … hash …" tail only
 //                                                                            when data is longer than 4 bytes)
@@ -26,11 +26,8 @@
 import { hashMessage, recoverMessageAddress } from 'viem'
 import { bytesToHex, checksumAddress, hexToBytes, keccak256Hex, toAddress, type Hex } from './hex'
 
-/** Fractional digits shown for the value line. */
-export const VALUE_DECIMALS = 10
-const WEI_PER_UNIT = 10n ** 18n
-/** Smallest wei amount the value line can express: 1e-10 native units. */
-export const VALUE_GRANULARITY_WEI = 10n ** BigInt(18 - VALUE_DECIMALS)
+/** Fractional digits the value line can show: the native token's full 18, so every wei value is exact. */
+export const VALUE_DECIMALS = 18
 /** Everything the signed message covers. */
 export interface MessageTxFields {
   nonce: bigint
@@ -55,19 +52,12 @@ function formatUnits(amount: bigint, decimals: number): string {
 
 /**
  * Render a wei amount as the value line's decimal: whole native units, then a
- * "." and the fraction with trailing zeros dropped (never more than 10 digits).
- * Throws when the amount is not a whole multiple of 1e8 wei, because the text
- * could not round-trip and the signature would then cover a different amount
- * than the one executed.
+ * "." and the fraction with trailing zeros dropped — up to 18 digits, so the
+ * text is exact for any wei amount and round-trips.
  */
 export function formatMessageValue(wei: bigint): string {
   if (wei < 0n) throw new Error('value must not be negative')
-  if (wei % VALUE_GRANULARITY_WEI !== 0n) {
-    throw new Error(
-      `value ${wei} wei is not representable with ${VALUE_DECIMALS} decimals; it must be a multiple of ${VALUE_GRANULARITY_WEI} wei`,
-    )
-  }
-  return formatUnits(wei, 18)
+  return formatUnits(wei, VALUE_DECIMALS)
 }
 
 /** The Data line for a non-empty calldata. */

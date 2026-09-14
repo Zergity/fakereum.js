@@ -194,7 +194,7 @@ fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxF
 
 Fakereum Tx #13 on ${esc(networkName)}
 To: 0x…                                   (EIP-55 checksummed; "To: new contract" for a deploy)
-Value: 0.001                              (only if &gt; 0; up to 10 decimals, so wei % 1e8 == 0)
+Value: 0.001                              (only if &gt; 0; native units, up to 18 decimals)
 Data: 0x12345678 and 68 bytes with hash 0x…   (only if data non-empty; tail only past 4 bytes)</code></pre>
   <p style="color:#7d8590">Fields are named and hex-encoded as in <code>eth_sendTransaction</code>. The same signed message is accepted once — a resend answers <code>already known</code>.</p>
   <p style="color:#7d8590">Which path an account should take is the sandbox's call: <code>fakereum_accountKind [address]</code> answers <code>{ kind: "upstream" | "sandbox", pinned }</code> — <code>upstream</code> (holds native token on the real chain) must send signed messages and must not be asked for EIP-712 signatures; <code>sandbox</code> uses the normal wallet flows. The verdict is pinned for good by the account's first sandbox transaction; reads before that follow the live upstream balance.</p>
