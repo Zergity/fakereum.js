@@ -237,8 +237,18 @@ the account and pins its kind like a landed tx. RPC shape:
 
 ### How a dapp should use it
 
-The `fakereum` skill under `.claude/skills/` carries the code; this is the
-shape. Two setups exist, differing in who knows about the fork:
+The quickest way is the SDK in [`sdk/`](sdk/README.md) (`fakereum-sdk`): a
+small framework-agnostic package with `discover()`, `accountKind()`, the
+signed-message helpers plus an offline message builder, and
+`createSandboxProvider({ sandbox, wallet })`, an EIP-1193 wrapper that does
+everything below — routes reads to the sandbox, turns `eth_sendTransaction`
+into a signed-message transaction (or lets the wallet send when it is already
+on this sandbox and the account is of the `sandbox` kind), refuses typed-data
+requests for `upstream` accounts, and caches kinds per address until pinned.
+One line wires it into ethers v5 (`new Web3Provider(p)`), ethers v6
+(`new BrowserProvider(p)`), viem (`custom(p)`) or a wagmi connector override.
+Build it with `npm run build:sdk`. The `fakereum` skill under `.claude/skills/`
+carries hand-rolled equivalents; this is the shape. Two setups exist, differing in who knows about the fork:
 
 - **Fork-aware dapp, normal wallet.** The wallet (MetaMask, Brave, …) stays
   on the real chain's RPC. The dapp is configured with the sandbox base URL,

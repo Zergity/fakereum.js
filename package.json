@@ -1,7 +1,7 @@
 {
   "name": "fakereum-worker",
   "version": "0.1.0",
-  "description": "Fakereum — a forked-EVM JSON-RPC sandbox that fronts any EVM RPC, ported to a Cloudflare Worker (free-plan compatible).",
+  "description": "Fakereum \u2014 a forked-EVM JSON-RPC sandbox that fronts any EVM RPC, ported to a Cloudflare Worker (free-plan compatible).",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
@@ -13,7 +13,9 @@
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:sdk": "tsc -p sdk/tsconfig.json",
+    "typecheck:sdk": "tsc -p sdk/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@ethereumjs/block": "10.1.2",

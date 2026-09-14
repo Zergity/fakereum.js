@@ -96,6 +96,26 @@ word, read the 32-byte length, then that many UTF-8 bytes, then `JSON.parse`.
 
 ## Integrate a dapp: make it sandbox-aware
 
+**Shortcut — the SDK.** The repo ships `fakereum-sdk` (`sdk/` in
+https://github.com/Zergity/fakereum.js; build with `npm run build:sdk`). It implements every step
+below and needs one line per stack:
+
+```ts
+import { createSandboxProvider, discover, accountKind } from 'fakereum-sdk'
+
+const provider = createSandboxProvider({ sandbox: 'https://fakereum-42161.derion.io/rpc', wallet: window.ethereum })
+// ethers v5: new ethers.providers.Web3Provider(provider)   ethers v6: new ethers.BrowserProvider(provider)
+// viem: createWalletClient({ transport: custom(provider) })  wagmi: connector provider override
+```
+
+The wrapper routes state reads to the sandbox, sends `eth_sendTransaction` as a signed-message
+tx (or through the wallet when the wallet is already on this sandbox and the account is of the
+`sandbox` kind), refuses `eth_signTypedData*` / `eth_sign` for `upstream` accounts with error
+code 4100, and caches account kinds per address — refreshed on `accountsChanged`, frozen once
+pinned. `discover()`, `accountKind()`, `transactionMessage()` / `sendTransaction()` and the
+offline `buildTransactionMessage()` are exported for hand-rolled flows. The rest of this section
+explains what it does, for dapps that wire things themselves.
+
 There are two ways to put a dapp on a sandbox, and they differ in who knows about the fork.
 Pick one deliberately; the send path in step 3 depends on it.
 
