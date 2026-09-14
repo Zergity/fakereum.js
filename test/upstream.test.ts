@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isMethodUnsupportedError, isProviderLimitError, Upstream } from '../src/upstream'
+import { headOfResponse, isMethodUnsupportedError, isProviderLimitError, Upstream } from '../src/upstream'
 
 // Real refusal bodies observed from public Arbitrum endpoints.
 const MEOW_UNSUPPORTED = { code: -32000, message: 'The method eth_call is not supported.' }
@@ -141,5 +141,106 @@ describe('Upstream failover', () => {
     const r = await up.call('eth_getLogs', [{ fromBlock: '0x1', toBlock: '0x2', topics: [] }])
     expect(r.result).toEqual([])
     expect(hits).toEqual(['https://publicnode', 'https://ordofi'])
+  })
+})
+
+describe('monotonic head guard', () => {
+  const HEAD = 62_471_900
+  const hex = (n: number) => '0x' + n.toString(16)
+
+  it('fails over past a head that fell behind the highest head seen, and benches the URL', async () => {
+    const hits: string[] = []
+    let frozen = false
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      // ordofi: fresh once, then its frozen backend (600 blocks back) answers.
+      if (url === 'https://ordofi') {
+        const n = frozen ? HEAD - 600 : HEAD
+        frozen = true
+        return jsonResponse({ jsonrpc: '2.0', id: 1, result: hex(n) })
+      }
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: hex(HEAD + 5) })
+    })
+    const up = new Upstream(['https://ordofi', 'https://publicnode'])
+    expect((await up.call('eth_blockNumber', [])).result).toBe(hex(HEAD))
+    const r = await up.call('eth_blockNumber', [])
+    expect(r.result).toBe(hex(HEAD + 5))
+    expect(hits).toEqual(['https://ordofi', 'https://ordofi', 'https://publicnode'])
+    // Benched: the stale URL sits out the next read entirely.
+    await up.call('eth_blockNumber', [])
+    expect(hits.slice(3)).toEqual(['https://publicnode'])
+  })
+
+  it('judges eth_getBlockByNumber at latest/pending by its number field', async () => {
+    const hits: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      const n = url === 'https://stale' ? HEAD - 1000 : HEAD
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: { number: hex(n), timestamp: '0x1' } })
+    })
+    const up = new Upstream(['https://stale', 'https://fresh'])
+    up['highWater'] = BigInt(HEAD) // as if a fresh URL had answered before
+    const r = await up.forward({ method: 'eth_getBlockByNumber', params: ['pending', false] })
+    expect((r.result as { number: string }).number).toBe(hex(HEAD))
+    expect(hits).toEqual(['https://stale', 'https://fresh'])
+  })
+
+  it('ignores honest skew within the margin and non-head reads', async () => {
+    const hits: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: hex(HEAD - 20) })
+    })
+    const up = new Upstream(['https://a', 'https://b'])
+    up['highWater'] = BigInt(HEAD)
+    expect((await up.call('eth_blockNumber', [])).result).toBe(hex(HEAD - 20))
+    expect(hits).toEqual(['https://a'])
+    // A fixed-block read carries no head to judge.
+    hits.length = 0
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: { number: hex(HEAD - 5000) } })
+    })
+    await up.call('eth_getBlockByNumber', [hex(HEAD - 5000), false])
+    expect(hits).toEqual(['https://a'])
+  })
+
+  it('re-anchors on the best answer when every URL is below the bound', async () => {
+    const hits: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: hex(url === 'https://a' ? HEAD - 300 : HEAD - 200) })
+    })
+    const up = new Upstream(['https://a', 'https://b'])
+    up['highWater'] = BigInt(HEAD + 100_000) // poisoned bound
+    const r = await up.call('eth_blockNumber', [])
+    expect(r.result).toBe(hex(HEAD - 200))
+    expect(hits).toEqual(['https://a', 'https://b']) // one pass, no backoff retries
+    expect(up['highWater']).toBe(BigInt(HEAD - 200))
+  })
+
+  it('returns the best stale head rather than nothing when the rest of the list is down', async () => {
+    vi.stubGlobal('fetch', async (url: string) => {
+      if (url === 'https://down') return new Response('nope', { status: 503 })
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: hex(HEAD - 900) })
+    })
+    const up = new Upstream(['https://stale', 'https://down'])
+    up['highWater'] = BigInt(HEAD)
+    const r = await up.call('eth_blockNumber', [])
+    expect(r.result).toBe(hex(HEAD - 900))
+    expect(up['highWater']).toBe(BigInt(HEAD)) // partial pass never re-anchors
+  })
+})
+
+describe('headOfResponse', () => {
+  it('extracts a head only from head reads', () => {
+    const ok = (result: unknown) => ({ jsonrpc: '2.0' as const, id: 1, result })
+    expect(headOfResponse('eth_blockNumber', [], ok('0x10'))).toBe(16n)
+    expect(headOfResponse('eth_getBlockByNumber', ['latest', false], ok({ number: '0x10' }))).toBe(16n)
+    expect(headOfResponse('eth_getBlockByNumber', ['0x10', false], ok({ number: '0x10' }))).toBeUndefined()
+    expect(headOfResponse('eth_getBlockByNumber', ['safe', false], ok({ number: '0x10' }))).toBeUndefined()
+    expect(headOfResponse('eth_getBlockByNumber', ['latest', false], ok(null))).toBeUndefined()
+    expect(headOfResponse('eth_call', [{}, 'latest'], ok('0x10'))).toBeUndefined()
+    expect(headOfResponse('eth_blockNumber', [], { jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'x' } })).toBeUndefined()
   })
 })

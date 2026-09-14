@@ -161,6 +161,20 @@ clock that stopped. Every consumer gets the corrected clock:
 
 The block **number** never moves — only the clock. See `src/head.ts`.
 
+### Monotonic head guard
+
+A chain's head only grows, so the highest block number any upstream URL has
+reported is a lower bound the real head always satisfies. A head read
+(`eth_blockNumber`, `eth_getBlockByNumber` at `latest` / `pending`) answering
+more than 64 blocks below that bound came from a backend that stopped following
+the chain — `rpc.ordofi.network` fronts two nodes, one of them frozen hundreds
+of blocks back, and round-robins between them. Such an answer fails over to
+the next URL and benches the one that gave it for 30s, the same as a rate
+limit. The margin absorbs honest skew between healthy nodes. Only when every
+configured URL answers below the bound is the bound itself taken to be wrong,
+and the best answer re-anchors it. Other methods carry no head to judge, so
+`eth_call` is protected only indirectly, through the bench.
+
 ## Status & known limitations
 
 **Verified locally** (TS 5.9, EthereumJS v10.1.2, against live Ethereum mainnet):

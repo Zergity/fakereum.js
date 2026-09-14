@@ -12,6 +12,7 @@
 // throws immediately.
 
 import type { JsonValue, RpcResponse } from './rpc'
+import { toBigInt } from './lib/hex'
 
 // Delay before each retry pass over the URL list (total 2 extra passes).
 const RETRY_BACKOFF_MS = [250, 750]
@@ -25,6 +26,16 @@ const MAX_BATCH = 100
 // once an endpoint says "limit" it will keep saying it — skipping it saves a
 // wasted subrequest per read while it cools down.
 const COOLDOWN_MS = 30_000
+
+// Monotonic head guard. A chain's head only grows, so the highest block number
+// any URL has ever reported is a lower bound the real head always satisfies. A
+// head read answering more than this many blocks BELOW that bound came from a
+// backend that has stopped following the chain (rpc.ordofi.network fronts two
+// nodes, one of them frozen ~600 blocks back) — fail over and bench the URL.
+// The margin absorbs honest skew between healthy nodes: 64 blocks is ~7s on a
+// 9-block/s Orbit chain and ~16s on Arbitrum One; a healthy node is never that
+// far behind, a frozen one is past it within seconds.
+const STALE_HEAD_BLOCKS = 64n
 
 export interface BatchCall {
   method: string
@@ -82,9 +93,36 @@ export function isMethodUnsupportedError(
   )
 }
 
+/**
+ * The chain head a response reports, when the request was a head read:
+ * eth_blockNumber, or eth_getBlockByNumber at latest/pending. Undefined for
+ * anything else (fixed blocks, other methods, errors, malformed results).
+ */
+export function headOfResponse(method: string, params: unknown[], resp: RpcResponse): bigint | undefined {
+  if (!resp || resp.error || resp.result == null) return undefined
+  try {
+    if (method === 'eth_blockNumber') {
+      return typeof resp.result === 'string' ? toBigInt(resp.result) : undefined
+    }
+    if (method === 'eth_getBlockByNumber') {
+      const tag = params[0]
+      if (typeof tag !== 'string') return undefined
+      const t = tag.toLowerCase()
+      if (t !== 'latest' && t !== 'pending') return undefined
+      const num = (resp.result as { number?: unknown }).number
+      return typeof num === 'string' ? toBigInt(num) : undefined
+    }
+  } catch {
+    /* unparseable quantity: not a head we can judge */
+  }
+  return undefined
+}
+
 export class Upstream {
   // url -> timestamp until which it sits out (in-memory; resets on DO eviction)
   private readonly cooldown = new Map<string, number>()
+  // Highest chain head any URL has reported (monotonic head guard; in-memory).
+  private highWater = 0n
   // url -> methods the provider refused with a "not supported" error body.
   // Skipping saves the wasted subrequest on every later call; a success clears
   // the mark, so a provider re-enabling a method heals itself. (In-memory;
@@ -132,12 +170,18 @@ export class Upstream {
     label: string,
     expectArray = false,
     method?: string,
+    params: unknown[] = [],
   ): Promise<unknown> {
     let lastErr: unknown
     let lastUnsupported: RpcResponse | null = null
+    // Stale-head answers seen this pass: returned (best one) only if EVERY URL
+    // answers stale, which means the bound itself is wrong, not the nodes.
+    let stale: Array<{ resp: RpcResponse; head: bigint }> = []
     for (let round = 0; ; round++) {
       let retryable = false
-      for (const url of this.candidates(method)) {
+      stale = []
+      const urls = this.candidates(method)
+      for (const url of urls) {
         try {
           const r = await fetch(url, {
             method: 'POST',
@@ -184,6 +228,21 @@ export class Upstream {
             continue // provider refuses this method, not benched -> next URL
           }
           if (resp && method) this.unsupported.get(url)?.delete(method)
+          if (resp && method) {
+            const head = headOfResponse(method, params, resp)
+            if (head !== undefined) {
+              if (head + STALE_HEAD_BLOCKS < this.highWater) {
+                lastErr = new Error(
+                  `stale head (${url}): ${head} is ${this.highWater - head} blocks behind the head already seen`,
+                )
+                stale.push({ resp, head })
+                retryable = true
+                this.bench(url)
+                continue // backend stopped following the chain -> next URL
+              }
+              if (head > this.highWater) this.highWater = head
+            }
+          }
           return j
         } catch (e) {
           lastErr = e // transport error -> try next URL (failover)
@@ -191,8 +250,25 @@ export class Upstream {
           this.bench(url)
         }
       }
+      // Every configured URL reported a head below the bound: the bound is
+      // what is wrong (a node once answered too high, or the chain rolled
+      // back). Take the best answer and re-anchor on it instead of burning
+      // retry passes on a guard that can no longer be satisfied. A partial
+      // pass (some URLs benched or failing) is not proof: retry, so a healthy
+      // URL coming off its bench can still answer.
+      if (stale.length > 0 && stale.length === this.urls.length) {
+        const best = stale.reduce((a, b) => (b.head > a.head ? b : a))
+        this.highWater = best.head
+        return best.resp
+      }
       if (!retryable || round >= RETRY_BACKOFF_MS.length) break
       await sleep(RETRY_BACKOFF_MS[round] ?? 0)
+    }
+    if (stale.length > 0) {
+      // Retries exhausted with some URLs stale and the rest failing outright:
+      // an old head still beats no answer.
+      const best = stale.reduce((a, b) => (b.head > a.head ? b : a))
+      return best.resp
     }
     // Every URL refused the method (nothing serves it) -> the refusal IS the
     // answer; return it as a normal JSON-RPC error instead of throwing.
@@ -235,7 +311,7 @@ export class Upstream {
   /** Issue a JSON-RPC call, returning the full response (result OR error). */
   async call(method: string, params: unknown[]): Promise<RpcResponse> {
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
-    return (await this.post(body, `upstream ${method}`, false, method)) as RpcResponse
+    return (await this.post(body, `upstream ${method}`, false, method, params)) as RpcResponse
   }
 
   /** Issue a call and return its `result`, throwing on an RPC-level error. */
@@ -251,12 +327,13 @@ export class Upstream {
    * special-case. The envelope is normalized (jsonrpc/id always present).
    */
   async forward(req: { method: string; params?: unknown; id?: unknown }): Promise<RpcResponse> {
+    const params = Array.isArray(req.params) ? req.params : []
     const body = JSON.stringify({
       jsonrpc: '2.0',
       id: req.id ?? 1,
       method: req.method,
       params: req.params ?? [],
     })
-    return (await this.post(body, 'upstream forward', false, req.method)) as RpcResponse
+    return (await this.post(body, 'upstream forward', false, req.method, params)) as RpcResponse
   }
 }

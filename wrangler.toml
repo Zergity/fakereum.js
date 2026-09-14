@@ -169,7 +169,10 @@ class_name = "EvmSandbox"
 # back an "archive request" (HTTP 403). rpc.ordofi.network (listed on
 # chainid.network) serves multi-hundred-block eth_getLogs ranges and accepts
 # the 3-param eth_call-with-stateOverrides shape; very wide ranges answer
-# -32005 "the network is busy" (failed over). It sits ahead of publicnode so a
+# -32005 "the network is busy" (failed over). Its load balancer fronts two
+# nodes, one of which is frozen hundreds of blocks back (seen 2026-09-14);
+# the monotonic head guard in src/upstream.ts fails over and benches it
+# whenever the frozen one answers. It sits ahead of publicnode so a
 # 429 from the official endpoint lands on a URL that can actually answer.
 # robinhood.drpc.org was dropped: its free tier refuses eth_call outright
 # (-32601 "method does not exist"), so every routed call wastes a subrequest
