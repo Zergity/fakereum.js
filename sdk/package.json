@@ -12,11 +12,16 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run build"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0"
@@ -29,5 +34,21 @@
     "url": "https://github.com/Zergity/fakereum.js",
     "directory": "sdk"
   },
-  "keywords": ["ethereum", "evm", "fork", "sandbox", "eip-1193", "eip-191", "fakereum"]
+  "keywords": [
+    "ethereum",
+    "evm",
+    "fork",
+    "sandbox",
+    "eip-1193",
+    "eip-191",
+    "fakereum"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://github.com/Zergity/fakereum.js/tree/main/sdk#readme",
+  "bugs": "https://github.com/Zergity/fakereum.js/issues"
 }

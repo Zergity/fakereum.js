@@ -83,3 +83,20 @@ Data: 0x<4 bytes> and <n> bytes with hash 0x…   (only when data is non-empty)
 ```
 npm run build:sdk      # from the repo root → sdk/dist
 ```
+
+## Install
+
+Published on npm as `fakereum-sdk`:
+
+```
+npm i fakereum-sdk
+```
+
+Straight from git (pnpm resolves a sub-directory; the `prepare` script builds `dist` on install):
+
+```
+pnpm add github:Zergity/fakereum.js#path:sdk
+```
+
+For a local checkout: `npm run build:sdk` at the repo root, then `npm link ./sdk` or a
+`file:../fakereum.js/sdk` dependency.
