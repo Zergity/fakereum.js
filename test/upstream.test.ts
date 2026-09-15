@@ -7,6 +7,8 @@ const ANKR_UNAUTHORIZED = {
   code: -32000,
   message: 'Unauthorized: You must authenticate your request with an API key.',
 }
+// drpc's router giving up on a call (HTTP 200 body); intermittent, not a chain answer.
+const DRPC_NO_ROUTE = { code: 12, message: "Can't route your request to suitable provider" }
 // publicnode's free tier, eth_getLogs without an address filter (HTTP 200 body).
 const PUBLICNODE_ADDRESS_REQUIRED = {
   code: -32701,
@@ -40,6 +42,12 @@ describe('isMethodUnsupportedError', () => {
 describe('isProviderLimitError', () => {
   it('matches auth-wall refusals (ankr-style)', () => {
     expect(isProviderLimitError(ANKR_UNAUTHORIZED)).toBe(true)
+  })
+  it("matches drpc's routing failure by code and by message", () => {
+    expect(isProviderLimitError(DRPC_NO_ROUTE)).toBe(true)
+    expect(isProviderLimitError({ code: -32000, message: "Can't route your request to suitable provider" })).toBe(true)
+    expect(isProviderLimitError({ code: 12, message: 'internal' })).toBe(true)
+    expect(isMethodUnsupportedError(DRPC_NO_ROUTE)).toBe(false) // not a per-method refusal
   })
   it('still does not match execution errors', () => {
     expect(isProviderLimitError({ code: -32000, message: 'execution reverted' })).toBe(false)
@@ -115,6 +123,23 @@ describe('Upstream failover', () => {
     const r = await up.call('eth_call', [{}, 'latest', {}])
     expect(r.result).toBe('0x3')
     expect(hits).toEqual(['https://ankr', 'https://good'])
+  })
+
+  it("fails over past drpc's 200 + code 12 routing failure and benches the URL", async () => {
+    const hits: string[] = []
+    vi.stubGlobal('fetch', async (url: string) => {
+      hits.push(url)
+      if (url === 'https://drpc') return jsonResponse({ jsonrpc: '2.0', id: 1, error: DRPC_NO_ROUTE })
+      return jsonResponse({ jsonrpc: '2.0', id: 1, result: '0x3' })
+    })
+    const up = new Upstream(['https://drpc', 'https://good'])
+    const r = await up.call('eth_call', [{}, 'latest', {}])
+    expect(r.result).toBe('0x3')
+    expect(hits).toEqual(['https://drpc', 'https://good'])
+    // benched: the next call skips drpc outright
+    const r2 = await up.call('eth_call', [{}, 'latest', {}])
+    expect(r2.result).toBe('0x3')
+    expect(hits.slice(2)).toEqual(['https://good'])
   })
 
   it('still returns real execution errors as the answer', async () => {

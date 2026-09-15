@@ -57,7 +57,13 @@ export function isProviderLimitError(
 ): boolean {
   if (!e) return false
   if (e.code === -32005 || e.code === 429) return true // EIP-1474 limit exceeded / http-ish
+  // drpc's router failing to place the call: code 12, "Can't route your request
+  // to suitable provider". Transient (about one call in six on state-override
+  // eth_call through the sandbox's egress) and never the chain's answer, so it
+  // is a fail-over signal like a quota refusal: next URL, bench this one briefly.
+  if (e.code === 12) return true
   const m = (e.message ?? '').toLowerCase()
+  if (/can.?t route (your )?request|no suitable provider|suitable provider/.test(m)) return true
   return /rate.?limit|usage limit|too many request|quota|over capacity|reached.*limit|limit (exceeded|reached)|unauthorized|api.?key/.test(
     m,
   )
