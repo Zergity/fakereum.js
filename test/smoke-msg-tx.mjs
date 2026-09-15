@@ -52,7 +52,7 @@ const nonceBefore = BigInt(await rpc('eth_getTransactionCount', [account.address
 const balBefore = BigInt(await rpc('eth_getBalance', [account.address, 'latest']))
 const { message, nonce } = await rpc('fakereum_transactionMessage', [request])
 const lines = message.split('\n')
-assert(lines[0] === `Fakereum Tx #${nonceBefore} on ${lines[0].split(' on ')[1]}` && lines[0].includes(' on '), 'header line carries the sandbox nonce')
+assert(lines[0] === `Fakereum Tx #${nonceBefore} on ${infos.upstreamChainName}` && !/Fake/.test(lines[0]), `header names the forked chain: ${lines[0]}`)
 assert(nonce === '0x' + nonceBefore.toString(16), 'returned nonce matches')
 assert(lines[1] === `To: ${RECIP}`, 'To line is checksummed')
 assert(lines[2] === 'Value: 0.001', 'Value line')
@@ -87,7 +87,7 @@ assert(spent > value && spent <= value + BigInt(rc.gasUsed) * BigInt(tx.maxFeePe
 console.log('3b. contract creation via signed message')
 const init = '0x602a60005260206000f3' // returns the 32-byte word 42 as runtime code
 const cm = await rpc('fakereum_transactionMessage', [{ from: account.address, data: init }])
-assert(cm.message.split('\n')[1] === 'To: new contract', 'To line reads "new contract"')
+assert(cm.message.split('\n')[1] === 'To: CREATE', 'To line reads "CREATE"')
 const chash = await rpc('fakereum_sendTransaction', [{ data: init, nonce: cm.nonce, signature: await account.signMessage({ message: cm.message }) }])
 const crc = await rpc('eth_getTransactionReceipt', [chash])
 assert(crc.status === '0x1' && /^0x[0-9a-fA-F]{40}$/.test(crc.contractAddress || ''), `deployed at ${crc.contractAddress}`)

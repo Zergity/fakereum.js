@@ -19,7 +19,7 @@
 import type { Config } from './types'
 import { ERR_INVALID_PARAMS, ERR_SERVER, makeError, makeResult, type RpcRequest, type RpcResponse } from './rpc'
 import { bytesToHex, hexToBytes, isHex, toAddress, toBigInt, toQuantity, type Hex } from './lib/hex'
-import { recoverMessageSigner, transactionMessage, type MessageTxFields } from './lib/eip191'
+import { messageChainName, recoverMessageSigner, transactionMessage, type MessageTxFields } from './lib/eip191'
 
 const HEX_BYTES_RE = /^0x([0-9a-fA-F]{2})*$/
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
@@ -160,7 +160,7 @@ export async function rpcTransactionMessage(req: RpcRequest, cfg: Config, deps: 
   }
   try {
     const nonce = p.nonce ?? (await deps.nonce(p.from!))
-    const message = transactionMessage(cfg.networkName, signedFields(p, nonce))
+    const message = transactionMessage(messageChainName(cfg), signedFields(p, nonce))
     return makeResult(req.id, { message, nonce: toQuantity(nonce) })
   } catch (e) {
     return makeError(req.id, ERR_INVALID_PARAMS, String((e as Error).message ?? e))
@@ -180,7 +180,7 @@ export async function rpcSendMessageTx(req: RpcRequest, cfg: Config, deps: SendM
   const fields = signedFields(p, p.nonce)
   let message: string
   try {
-    message = transactionMessage(cfg.networkName, fields)
+    message = transactionMessage(messageChainName(cfg), fields)
   } catch (e) {
     return makeError(req.id, ERR_INVALID_PARAMS, String((e as Error).message ?? e))
   }

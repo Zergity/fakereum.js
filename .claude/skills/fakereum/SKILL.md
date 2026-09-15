@@ -56,6 +56,7 @@ The return value is a single ABI-encoded `string` holding JSON. Decode the strin
   "etherscanApiV2":   "…/v2/api",       // same proxy, /v2/api path
   "explorer":         "…",              // this sandbox's explorer
   "upstreamRpc":      "https://arbitrum-one-rpc.publicnode.com",  // the real chain ← check upstream balances here
+  "upstreamChainName": "Arbitrum One",  // header of every signed message ("Fakereum Tx #n on Arbitrum One")
   "upstreamExplorer": { "name": "Arbiscan", "url": "https://arbiscan.io" }  // optional
 }
 ```
@@ -284,7 +285,7 @@ which is automatic). The page lists the account's balance on each source; the us
 and `personal_sign`s
 
 ```
-Fakereum Import to Fake Arbitrum One
+Fakereum Import to Arbitrum One
 Account: 0xAb58…eC9B
 From: Ethereum Mainnet (chain id 1)
 ```
@@ -342,11 +343,12 @@ fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxF
 ```
 
 The text the user sees in the wallet, byte for byte (`\n`-joined, no trailing newline; the
-header uses the nonce and `infos.networkName`, so you can also build it yourself):
+header uses the nonce and `infos.upstreamChainName` — the real chain's name, never "Fake …" — so
+you can also build it yourself):
 
 ```
-Fakereum Tx #13 on Fake Arbitrum One
-To: 0xAb58…eC9B                                  ← EIP-55 checksummed; "To: new contract" for a deploy
+Fakereum Tx #13 on Arbitrum One
+To: 0xAb58…eC9B                                  ← EIP-55 checksummed; "To: CREATE" for a deploy
 Value: 0.001                                     ← only when value > 0
 Data: 0xa9059cbb and 64 bytes with hash 0x…      ← only when data is non-empty
 ```
@@ -354,7 +356,7 @@ Data: 0xa9059cbb and 64 bytes with hash 0x…      ← only when data is non-emp
 Rules that bite:
 
 - **Contract creation works:** omit `to` (or pass `null`) and put the init code in `data`; the
-  To line reads `new contract` and the receipt carries `contractAddress` as usual.
+  To line reads `CREATE` and the receipt carries `contractAddress` as usual.
 
 - **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
   from the first call's result (or `eth_getTransactionCount`). `gas`, `gasPrice` or

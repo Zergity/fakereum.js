@@ -18,9 +18,10 @@ import type { RpcRequest } from '../src/rpc'
 // A well-known throwaway key (hardhat account #1); never funded on any real chain.
 const PK = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
 const account = privateKeyToAccount(PK)
-const NETWORK = 'Fake Arbitrum One'
+// Signed messages name the forked chain, never the sandbox's "Fake …" network name.
+const NETWORK = 'Arbitrum One'
 const TO = '0x1111111111111111111111111111111111111111' as Hex
-const cfg = { networkName: NETWORK, chainId: 42161n } as unknown as Config
+const cfg = { networkName: 'Fake Arbitrum One', upstreamChainId: 42161n, chainId: 42161n } as unknown as Config
 
 const ETH = 10n ** 18n
 const GWEI = 10n ** 9n
@@ -72,10 +73,10 @@ describe('transactionMessage', () => {
     expect(transactionMessage(NETWORK, fields({ nonce: 0n })).split('\n')[0]).toBe(`Fakereum Tx #0 on ${NETWORK}`)
   })
 
-  it('renders a contract creation as "To: new contract" with the init code summarized', () => {
+  it('renders a contract creation as "To: CREATE" with the init code summarized', () => {
     const init = hexToBytes('0x6080604052' + 'cc'.repeat(40))
     const msg = transactionMessage(NETWORK, fields({ to: null, data: init }))
-    expect(msg.split('\n')).toEqual([HEADER, 'To: new contract', `Data: ${formatMessageData(init)}`])
+    expect(msg.split('\n')).toEqual([HEADER, 'To: CREATE', `Data: ${formatMessageData(init)}`])
   })
 
   it('checksums the address and prints the value line', () => {

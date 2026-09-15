@@ -64,7 +64,7 @@ const infos = await discover('https://fakereum-42161.derion.io/rpc')
 const { kind, pinned } = await accountKind(infos.rpc, account)
 
 const { message, nonce } = await transactionMessage(infos.rpc, { from: account, to, value, data })
-// identical to: buildTransactionMessage(infos.networkName, { nonce, to, value, data })
+// identical to: buildTransactionMessage(infos.upstreamChainName, { nonce, to, value, data })
 const signature = await wallet.request({ method: 'personal_sign', params: [message, account] })
 const hash = await sendTransaction(infos.rpc, { to, value, data, nonce, signature })
 ```
@@ -72,8 +72,8 @@ const hash = await sendTransaction(infos.rpc, { to, value, data, nonce, signatur
 The message text, byte for byte:
 
 ```
-Fakereum Tx #<nonce> on <networkName>
-To: <EIP-55 address>              (or "To: new contract" for a deploy)
+Fakereum Tx #<nonce> on <upstream chain name>   (e.g. "on Arbitrum One")
+To: <EIP-55 address>              (or "To: CREATE" for a deploy)
 Value: <native units, ≤18 dp>     (only when value > 0)
 Data: 0x<4 bytes> and <n> bytes with hash 0x…   (only when data is non-empty)
 ```

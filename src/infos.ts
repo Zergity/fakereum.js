@@ -6,7 +6,7 @@
 import type { Config, Infos } from './types'
 import { makeResult, type RpcRequest, type RpcResponse } from './rpc'
 import { addrEq, bytesToHex, concatBytes, type Hex } from './lib/hex'
-import { upstreamExplorerForChain } from './lib/chains'
+import { chainName, upstreamExplorerForChain } from './lib/chains'
 
 export const INFOS_SENTINEL = '0x000000000000000000000000000000000000fa4e' as Hex
 
@@ -16,6 +16,7 @@ export function buildInfos(cfg: Config, baseURL: string): Infos {
     upstreamChainId: ('0x' + cfg.upstreamChainId.toString(16)) as Hex,
     networkName: cfg.networkName,
     symbol: cfg.symbol,
+    upstreamChainName: chainName(cfg.upstreamChainId),
   }
   if (baseURL) {
     res.rpc = baseURL + '/rpc'

@@ -114,7 +114,7 @@ mirror the Go flags:
 
 Discovery: `eth_call` to `0x…fa4e` returns the ABI-encoded sandbox info string
 (same sentinel as the Go version), now also carrying `upstreamRpc`, the primary
-upstream URL, so a dapp can check an account's real-chain balance.
+upstream URL, and `upstreamChainName`, the header of every signed message.
 
 ### Signed-message transactions (EIP-191)
 
@@ -139,14 +139,15 @@ upstream gas price with no tip. The text, lines joined by `\n`, no trailing
 newline:
 
 ```
-Fakereum Tx #13 on <networkName>
-To: <EIP-55 address>                           ← "To: new contract" for a deploy (no `to`)
+Fakereum Tx #13 on <upstream chain name>       ← e.g. "on Arbitrum One", never "Fake …"
+To: <EIP-55 address>                           ← "To: CREATE" for a deploy (no `to`)
 Value: 0.001                                   ← only when value > 0
 Data: 0x12345678 and 68 bytes with hash 0x…    ← only when data is non-empty (init code for a deploy)
 ```
 
-The header carries the nonce and the sandbox's `networkName` (the discovery
-payload's), so a client can build the text offline. `Value` is in whole
+The header carries the nonce and the name of the chain the sandbox forks
+(discovery's `upstreamChainName`, e.g. "Arbitrum One"), so a client can build
+the text offline. `Value` is in whole
 native units with up to 18 fractional digits, trailing zeros dropped — exact
 for any wei amount. `Data` shows the first four bytes; when more follow,
 their count and the keccak256 of those trailing bytes.
@@ -216,7 +217,7 @@ sandbox's own upstream (that one is automatic). The page connects a wallet,
 lists the account's balance on each source, and after a `personal_sign` of
 
 ```
-Fakereum Import to <networkName>
+Fakereum Import to <upstream chain name>
 Account: <EIP-55 address>
 From: <chain name> (chain id <id>)
 ```

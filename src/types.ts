@@ -252,6 +252,8 @@ export interface Infos {
   explorer?: string
   /** Primary upstream JSON-RPC URL — where a dapp checks an account's real-chain balance. */
   upstreamRpc?: string
+  /** The forked chain's name, e.g. "Arbitrum One" — the header of every signed message. */
+  upstreamChainName: string
   upstreamExplorer?: UpstreamExplorerInfo
 }
 

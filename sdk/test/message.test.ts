@@ -9,7 +9,7 @@ import { abiEncodeString, buildInfos } from '../../src/infos'
 import { hexToBytes, type Hex } from '../../src/lib/hex'
 import type { Config } from '../../src/types'
 
-const NET = 'Fake Arbitrum One'
+const NET = 'Arbitrum One' // the forked chain's name (infos.upstreamChainName)
 const TO = '0xab5801a7d398351b8be11c439e05c5b3259aec9b'
 const ETH = 10n ** 18n
 

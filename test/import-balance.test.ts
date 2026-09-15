@@ -20,6 +20,7 @@ const OTHER = privateKeyToAccount('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca
 const ETH = 10n ** 18n
 // An Arbitrum fork: Arbitrum is the upstream, so the other three chains are sources.
 const cfg = { networkName: 'Fake Arbitrum One', upstreamChainId: 42161n, balanceMultiplier: 1000n } as unknown as Config
+const CHAIN = 'Arbitrum One' // the header names the forked chain, not the "Fake …" network name
 const MAINNET = importChain(1n)!
 
 const req = (method: string, ...params: unknown[]): RpcRequest => ({ jsonrpc: '2.0', id: 3, method, params })
@@ -43,9 +44,9 @@ function deps(balances: Record<string, bigint>, prior?: ImportRecord) {
 }
 
 describe('importMessage / importSources', () => {
-  it('names the sandbox, the checksummed account and the source chain', () => {
-    expect(importMessage('Fake Arbitrum One', ME, MAINNET)).toBe(
-      `Fakereum Import to Fake Arbitrum One\nAccount: ${checksumAddress(ME)}\nFrom: Ethereum Mainnet (chain id 1)`,
+  it('names the forked chain, the checksummed account and the source chain', () => {
+    expect(importMessage(CHAIN, ME, MAINNET)).toBe(
+      `Fakereum Import to Arbitrum One\nAccount: ${checksumAddress(ME)}\nFrom: Ethereum Mainnet (chain id 1)`,
     )
   })
 
@@ -81,7 +82,7 @@ describe('rpcImportSources', () => {
 describe('rpcImportMessage', () => {
   it('returns the text for a supported source', () => {
     const resp = rpcImportMessage(req('fakereum_importMessage', { account: ME, chainId: '0x1' }), cfg)
-    expect(resp.result).toEqual({ message: importMessage(cfg.networkName, ME, MAINNET) })
+    expect(resp.result).toEqual({ message: importMessage(CHAIN, ME, MAINNET) })
     expect(rpcImportMessage(req('x', { account: ME, chainId: 8453 }), cfg).result).toBeDefined()
   })
 
@@ -93,7 +94,7 @@ describe('rpcImportMessage', () => {
 })
 
 describe('rpcImportBalance', () => {
-  const sign = (chain = MAINNET, who = account) => who.signMessage({ message: importMessage(cfg.networkName, ME, chain) })
+  const sign = (chain = MAINNET, who = account) => who.signMessage({ message: importMessage(CHAIN, ME, chain) })
 
   it('credits balance × multiplier once the account has signed, and records the import', async () => {
     const { d, credited } = deps({ '1': 3n * ETH })

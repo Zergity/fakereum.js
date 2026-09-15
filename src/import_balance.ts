@@ -14,14 +14,14 @@
 //
 // Message text, byte for byte ("\n"-joined, no trailing newline):
 //
-//   Fakereum Import to <networkName>
+//   Fakereum Import to <upstream chain name>     e.g. "to Arbitrum One" (never "Fake …")
 //   Account: <EIP-55 address>
 //   From: <chain name> (chain id <id>)
 
 import type { Config } from './types'
 import { ERR_INVALID_PARAMS, ERR_SERVER, makeError, makeResult, type RpcRequest, type RpcResponse } from './rpc'
 import { checksumAddress, hexToBytes, isHex, toAddress, toBigInt, toQuantity, type Hex } from './lib/hex'
-import { recoverMessageSigner } from './lib/eip191'
+import { messageChainName, recoverMessageSigner } from './lib/eip191'
 import { IMPORT_CHAINS, importChain, readNativeBalance, type ImportChain } from './lib/import_chains'
 
 /** Persisted under "import:<addrKey>" — one per account, forever. */
@@ -44,9 +44,9 @@ export interface ImportDeps {
   now?: () => number
 }
 
-export function importMessage(networkName: string, account: Hex, chain: ImportChain): string {
+export function importMessage(targetChain: string, account: Hex, chain: ImportChain): string {
   return [
-    `Fakereum Import to ${networkName}`,
+    `Fakereum Import to ${targetChain}`,
     `Account: ${checksumAddress(account)}`,
     `From: ${chain.name} (chain id ${chain.chainId})`,
   ].join('\n')
@@ -119,7 +119,7 @@ export async function rpcImportSources(req: RpcRequest, cfg: Config, deps: Impor
 export function rpcImportMessage(req: RpcRequest, cfg: Config): RpcResponse {
   const parsed = parseAccountAndChain(req, cfg)
   if ('error' in parsed) return makeError(req.id, ERR_INVALID_PARAMS, parsed.error)
-  return makeResult(req.id, { message: importMessage(cfg.networkName, parsed.account, parsed.chain) })
+  return makeResult(req.id, { message: importMessage(messageChainName(cfg), parsed.account, parsed.chain) })
 }
 
 export async function rpcImportBalance(req: RpcRequest, cfg: Config, deps: ImportDeps): Promise<RpcResponse> {
@@ -142,7 +142,7 @@ export async function rpcImportBalance(req: RpcRequest, cfg: Config, deps: Impor
 
   let signer: Hex
   try {
-    signer = await recoverMessageSigner(importMessage(cfg.networkName, account, chain), signature)
+    signer = await recoverMessageSigner(importMessage(messageChainName(cfg), account, chain), signature)
   } catch (e) {
     return makeError(req.id, ERR_INVALID_PARAMS, `cannot recover signer: ${String((e as Error).message ?? e)}`)
   }

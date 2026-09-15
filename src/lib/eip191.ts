@@ -11,8 +11,8 @@
 //
 // The message text is the contract between client and server. Byte for byte:
 //
-//   Fakereum Tx #<nonce> on <networkName>
-//   To: <EIP-55 checksummed address>          — or "To: new contract" for a contract creation,
+//   Fakereum Tx #<nonce> on <upstream chain name>      e.g. "on Arbitrum One" (never "Fake …")
+//   To: <EIP-55 checksummed address>          — or "To: CREATE" for a contract creation,
 //                                                 the Data line then summarizing the init code
 //   Value: <decimal, whole native units, up to 18 fractional digits>   (only when value > 0)
 //   Data: 0x<first 4 bytes> and <n> bytes with hash 0x<keccak256(data[4:])>  (only when data is non-empty;
@@ -20,11 +20,12 @@
 //                                                                            when data is longer than 4 bytes)
 //
 // Lines are joined with "\n" and there is no trailing newline. The header
-// carries the sandbox's network name (what discovery and the wallet show), so
-// a client can build the text offline from the discovery payload alone.
+// names the chain the sandbox forks (discovery's `upstreamChainName`), so a
+// client can build the text offline from the discovery payload alone.
 
 import { hashMessage, recoverMessageAddress } from 'viem'
 import { bytesToHex, checksumAddress, hexToBytes, keccak256Hex, toAddress, type Hex } from './hex'
+import { chainName } from './chains'
 
 /** Fractional digits the value line can show: the native token's full 18, so every wei value is exact. */
 export const VALUE_DECIMALS = 18
@@ -38,7 +39,7 @@ export interface MessageTxFields {
 }
 
 /** The To line's text for a contract creation. */
-export const CREATE_TO_LINE = 'new contract'
+export const CREATE_TO_LINE = 'CREATE'
 
 /** Decimal with `decimals` fractional digits, trailing zeros (and a bare ".") dropped. */
 function formatUnits(amount: bigint, decimals: number): string {
@@ -68,9 +69,14 @@ export function formatMessageData(data: Uint8Array): string {
   return `${head} and ${tail.length} bytes with hash ${keccak256Hex(tail)}`
 }
 
+/** The chain name the signed messages carry: the upstream chain's, e.g. "Arbitrum One". */
+export function messageChainName(cfg: { upstreamChainId: bigint }): string {
+  return chainName(cfg.upstreamChainId)
+}
+
 /** The exact text a wallet must sign (personal_sign / EIP-191) for these fields. */
-export function transactionMessage(networkName: string, f: MessageTxFields): string {
-  const lines = [`Fakereum Tx #${f.nonce} on ${networkName}`, `To: ${f.to ? checksumAddress(f.to) : CREATE_TO_LINE}`]
+export function transactionMessage(chain: string, f: MessageTxFields): string {
+  const lines = [`Fakereum Tx #${f.nonce} on ${chain}`, `To: ${f.to ? checksumAddress(f.to) : CREATE_TO_LINE}`]
   if (f.value > 0n) lines.push(`Value: ${formatMessageValue(f.value)}`)
   if (f.data.length > 0) lines.push(`Data: ${formatMessageData(f.data)}`)
   return lines.join('\n')

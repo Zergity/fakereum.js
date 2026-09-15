@@ -14,7 +14,7 @@ export interface SignedTxFields {
   data?: Hex | string
 }
 
-export const CREATE_TO_LINE = 'new contract'
+export const CREATE_TO_LINE = 'CREATE'
 
 /** Decimal in native units with up to 18 fractional digits, trailing zeros dropped. */
 export function formatValue(wei: bigint): string {
@@ -35,37 +35,39 @@ export function formatData(data: Uint8Array): string {
 }
 
 /**
- * The exact EIP-191 text for a sandbox transaction:
+ * The exact EIP-191 text for a sandbox transaction. `chainName` is the forked
+ * chain's name — discovery's `upstreamChainName`, e.g. "Arbitrum One":
  *
- *   Fakereum Tx #<nonce> on <networkName>
- *   To: <EIP-55 address>            (or "To: new contract")
+ *   Fakereum Tx #<nonce> on <chainName>
+ *   To: <EIP-55 address>            (or "To: CREATE")
  *   Value: <native units>           (only when value > 0)
  *   Data: <summary>                 (only when data is non-empty)
  */
-export function buildTransactionMessage(networkName: string, f: SignedTxFields): string {
+export function buildTransactionMessage(chainName: string, f: SignedTxFields): string {
   const nonce = toBigInt(f.nonce)
   const value = toBigInt(f.value)
   const data = f.data ? hexToBytes(f.data) : new Uint8Array(0)
-  const lines = [`Fakereum Tx #${nonce} on ${networkName}`, `To: ${f.to ? checksumAddress(f.to) : CREATE_TO_LINE}`]
+  const lines = [`Fakereum Tx #${nonce} on ${chainName}`, `To: ${f.to ? checksumAddress(f.to) : CREATE_TO_LINE}`]
   if (value > 0n) lines.push(`Value: ${formatValue(value)}`)
   if (data.length > 0) lines.push(`Data: ${formatData(data)}`)
   return lines.join('\n')
 }
 
 /**
- * The exact EIP-191 text authorizing a cross-chain balance import:
+ * The exact EIP-191 text authorizing a cross-chain balance import. `chainName`
+ * is the sandbox's forked chain (discovery's `upstreamChainName`):
  *
- *   Fakereum Import to <networkName>
+ *   Fakereum Import to <chainName>
  *   Account: <EIP-55 address>
- *   From: <chain name> (chain id <id>)
+ *   From: <source chain name> (chain id <id>)
  */
 export function buildImportMessage(
-  networkName: string,
+  chainName: string,
   account: string,
   source: { name: string; chainId: bigint | number | string },
 ): string {
   return [
-    `Fakereum Import to ${networkName}`,
+    `Fakereum Import to ${chainName}`,
     `Account: ${checksumAddress(account)}`,
     `From: ${source.name} (chain id ${toBigInt(source.chainId)})`,
   ].join('\n')

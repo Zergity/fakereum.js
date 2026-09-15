@@ -174,6 +174,7 @@ ${replayGuardSection}
   "chainId":          "0x…",      // this sandbox
   "upstreamChainId":  "0x…",      // forked chain
   "networkName":      "…",
+  "upstreamChainName": "…",      // e.g. "Arbitrum One" — header of every signed message
   "symbol":           "…",
   "rpc":              "…/rpc",     // JSON-RPC
   "etherscanApi":     "…/api",     // Etherscan v2 proxy
@@ -192,8 +193,8 @@ ${replayGuardSection}
 fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
                             → tx hash
 
-Fakereum Tx #13 on ${esc(networkName)}
-To: 0x…                                   (EIP-55 checksummed; "To: new contract" for a deploy)
+Fakereum Tx #13 on ${esc(upstreamName)}
+To: 0x…                                   (EIP-55 checksummed; "To: CREATE" for a deploy)
 Value: 0.001                              (only if &gt; 0; native units, up to 18 decimals)
 Data: 0x12345678 and 68 bytes with hash 0x…   (only if data non-empty; tail only past 4 bytes)</code></pre>
   <p style="color:#7d8590">Fields are named and hex-encoded as in <code>eth_sendTransaction</code>. The same signed message is accepted once — a resend answers <code>already known</code>.</p>

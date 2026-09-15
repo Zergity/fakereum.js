@@ -17,6 +17,7 @@ const knownChains: Record<string, string> = {
   '250': 'Fantom',
   '8453': 'Base',
   '42161': 'Arbitrum One',
+  '4663': 'Robinhood Chain',
   '43114': 'Avalanche',
   '59144': 'Linea',
   '534352': 'Scroll',

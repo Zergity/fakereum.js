@@ -247,7 +247,7 @@ describe('Executor.applyMessageTx contract creation', () => {
     expect(tx.createdContracts).toEqual([tx.contractAddress])
     expect(tx.createdVia).toEqual({ [tx.contractAddress!]: 'tx' })
     expect(tx.input).toBe('0x602a60005260206000f3')
-    expect(tx.signedMessage!.message.split('\n')[1]).toBe('To: new contract')
+    expect(tx.signedMessage!.message.split('\n')[1]).toBe('To: CREATE')
     const code = overlay.get(addrKey(tx.contractAddress!))!.code
     expect(code.length).toBe(32)
     expect(code[31]).toBe(42)

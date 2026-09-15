@@ -37,7 +37,7 @@ function fakeSandbox(kinds: Record<string, Kind>) {
         break
       }
       case 'fakereum_transactionMessage':
-        result = { message: 'Fakereum Tx #5 on Fake Arbitrum One\nTo: ' + TO, nonce: '0x5' }
+        result = { message: 'Fakereum Tx #5 on Arbitrum One\nTo: ' + TO, nonce: '0x5' }
         break
       case 'fakereum_sendTransaction':
         result = HASH
@@ -115,7 +115,7 @@ describe('createSandboxProvider', () => {
     expect(hash).toBe(HASH)
     // the wallet only ever signed a message
     expect(calls.map((c) => c.method)).toEqual(['eth_call', 'personal_sign'])
-    expect(calls[1]!.params).toEqual(['Fakereum Tx #5 on Fake Arbitrum One\nTo: ' + TO, ACCT])
+    expect(calls[1]!.params).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO, ACCT])
     const sent = sandbox.calls.find((c) => c.method === 'fakereum_sendTransaction')!
     expect(sent.params).toEqual([{ to: TO, data: '0x12', value: '0x38d7ea4c68000', nonce: '0x5', gas: '0x5208', signature: SIG }])
     const asked = sandbox.calls.find((c) => c.method === 'fakereum_transactionMessage')!

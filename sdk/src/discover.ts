@@ -17,6 +17,8 @@ export interface Infos {
   etherscanApiV2?: string
   explorer?: string
   upstreamRpc?: string
+  /** The forked chain's name, e.g. "Arbitrum One" — the header of every signed message. */
+  upstreamChainName?: string
   upstreamExplorer?: { name: string; url: string }
 }
 
