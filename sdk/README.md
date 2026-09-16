@@ -19,6 +19,8 @@ user keeps a normal wallet:
   sandbox and the account is of the `sandbox` kind), and typed-data signature
   requests are refused for `upstream` accounts. Kinds are cached per address,
   refreshed on `accountsChanged`, and frozen once the sandbox reports them pinned.
+  Signed-message sends are ordered per account so two of them never sign the same
+  nonce.
 
 ## One line per stack
 
@@ -55,19 +57,62 @@ wrapper is just another EIP-1193 provider.
 `upstream`-kind accounts always send signed messages. Force either behavior
 with `sendMode: 'message' | 'wallet'`.
 
+## Nonces
+
+A sandbox has no mempool: `fakereum_sendTransaction` executes on arrival and the
+signed nonce has to equal the account's current one. Since signing is a human
+round trip, two sends fired together — approve, then swap — would both read the
+same nonce while the first prompt is still open, and whichever landed second
+would be rejected for reusing it.
+
+`createSandboxProvider` runs an account's sends through two stages:
+
+- **sign** — one at a time, on `max(the nonce the sandbox reports, one past the
+  highest nonce signed here)`. A nonce counts as spent the moment the wallet
+  hands back a well-formed signature, not when the transaction lands, so the
+  next prompt opens while the previous transaction is still executing.
+- **submit** — in signing order, one at a time, since nonce N+1 can't land
+  before N does.
+
+Nothing is spent until a signature exists: cancel a prompt, or get a malformed
+signature back, and the nonce goes to the next send. Different accounts never
+wait on each other, and an explicit `tx.nonce` is passed through untouched.
+Sends that go through the wallet keep the wallet's own nonce handling.
+
+The spent count is a hint, not a source of truth — another client, or
+`fakereum_clearSandbox`, can move the account, and a submit that fails never
+consumed its nonce. Either case drops the hint so the next send re-reads from
+the sandbox; `provider.resetNonces(address?)` does it on demand, and a
+`fakereum_clearSandbox` sent through the provider clears it automatically.
+
+The cost of signing ahead: if a submit fails, anything already signed behind it
+was signed against a nonce that never arrived and has to be signed again. That
+is the trade for not making the user wait out each execution before the next
+prompt.
+
 ## Lower-level helpers
 
 ```ts
-import { discover, accountKind, transactionMessage, sendTransaction, buildTransactionMessage } from 'fakereum-sdk'
+import { discover, accountKind, createNonceManager, transactionMessage, sendTransaction, buildTransactionMessage } from 'fakereum-sdk'
 
 const infos = await discover('https://fakereum-42161.derion.io/rpc')
 const { kind, pinned } = await accountKind(infos.rpc, account)
 
-const { message, nonce } = await transactionMessage(infos.rpc, { from: account, to, value, data })
-// identical to: buildTransactionMessage(infos.upstreamChainName, { nonce, to, value, data })
-const signature = await wallet.request({ method: 'personal_sign', params: [message, account] })
-const hash = await sendTransaction(infos.rpc, { to, value, data, nonce, signature })
+// Skip the nonce manager only if you know one send is in flight at a time.
+const nonces = createNonceManager(infos.rpc)
+
+const hash = await nonces.signAndSend(account, {
+  sign: async (nonce) => {
+    const { message } = await transactionMessage(infos.rpc, { from: account, to, value, data, nonce })
+    // identical to: buildTransactionMessage(infos.upstreamChainName, { nonce, to, value, data })
+    return wallet.request({ method: 'personal_sign', params: [message, account] })
+  },
+  submit: (nonce, signature) => sendTransaction(infos.rpc, { to, value, data, nonce, signature }),
+})
 ```
+
+Pass your own manager to `createSandboxProvider({ ..., nonceManager })` to share
+one queue between the provider and code that calls these helpers directly.
 
 The message text, byte for byte:
 

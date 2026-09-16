@@ -9,8 +9,13 @@ const RPC = 'https://sandbox.test/rpc'
 const ACCT = '0x1111111111111111111111111111111111111111'
 const OTHER = '0x2222222222222222222222222222222222222222'
 const TO = '0x3333333333333333333333333333333333333333'
-const SIG = ('0x' + '11'.repeat(64) + '1b') as `0x${string}`
 const HASH = '0x' + 'aa'.repeat(32)
+
+// The fake wallet's "signature" just carries the signer, so the fake sandbox can
+// recover it the way the real one recovers an EIP-191 signer.
+const sigFor = (addr: string): `0x${string}` => ('0x' + addr.slice(2).toLowerCase().padStart(128, '0') + '1b') as `0x${string}`
+const signerOf = (sig: string): string => '0x' + sig.slice(2, 130).slice(-40)
+const SIG = sigFor(ACCT)
 
 const infos = buildInfos(
   { chainId: 42161n, upstreamChainId: 42161n, networkName: 'Fake Arbitrum One', symbol: 'FETH', upstreamRpcs: [] } as unknown as Config,
@@ -20,45 +25,66 @@ const INFOS_HEX = abiEncodeString(new TextEncoder().encode(JSON.stringify(infos)
 
 type Kind = { kind: 'sandbox' | 'upstream'; pinned: boolean }
 
-function fakeSandbox(kinds: Record<string, Kind>) {
+function fakeSandbox(kinds: Record<string, Kind>, start: Record<string, number> = {}, onSend?: () => Promise<void>) {
   const calls: Array<{ method: string; params: unknown[] }> = []
+  /** Landed sends, in the order the sandbox accepted them. */
+  const landed: Array<{ from: string; nonce: bigint }> = []
+  const nonces = new Map<string, bigint>(Object.entries(start).map(([a, n]) => [a.toLowerCase(), BigInt(n)]))
+  const nonceOf = (a: string): bigint => nonces.get(a.toLowerCase()) ?? 5n
+
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
     expect(url).toBe(RPC)
     const { method, params } = JSON.parse(init.body as string)
     calls.push({ method, params })
-    let result: unknown
+    const ok = (result: unknown) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }))
+    const fail = (message: string) => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32000, message } }))
+
     switch (method) {
       case 'eth_call':
-        result = INFOS_HEX
-        break
+        return ok(INFOS_HEX)
       case 'fakereum_accountKind': {
         const k = kinds[(params[0] as string).toLowerCase()] ?? { kind: 'sandbox', pinned: false }
-        result = { address: params[0], ...k, replayGuard: true }
-        break
+        return ok({ address: params[0], ...k, replayGuard: true })
       }
-      case 'fakereum_transactionMessage':
-        result = { message: 'Fakereum Tx #5 on Arbitrum One\nTo: ' + TO, nonce: '0x5' }
-        break
-      case 'fakereum_sendTransaction':
-        result = HASH
-        break
+      case 'eth_getTransactionCount':
+        return ok('0x' + nonceOf(params[0] as string).toString(16))
+      case 'fakereum_transactionMessage': {
+        const p = params[0] as { from?: string; to?: string; nonce?: string }
+        const n = p.nonce !== undefined ? BigInt(p.nonce) : nonceOf(p.from!)
+        return ok({ message: `Fakereum Tx #${n} on Arbitrum One\nTo: ${p.to}`, nonce: '0x' + n.toString(16) })
+      }
+      case 'fakereum_sendTransaction': {
+        // No mempool: the signed nonce has to equal the account's current one.
+        if (onSend) await onSend()
+        const p = params[0] as { nonce: string; signature: string }
+        const from = signerOf(p.signature)
+        const want = nonceOf(from)
+        if (BigInt(p.nonce) !== want) {
+          return fail(`the tx doesn't have the correct nonce. account has nonce of: ${want} tx has nonce of: ${BigInt(p.nonce)}`)
+        }
+        nonces.set(from.toLowerCase(), want + 1n)
+        landed.push({ from, nonce: want })
+        return ok(HASH)
+      }
       case 'eth_getBalance':
-        result = '0x1'
-        break
+        return ok('0x1')
+      case 'fakereum_clearSandbox':
+        nonces.clear()
+        return ok(true)
       default:
-        result = 'sandbox:' + method
+        return ok('sandbox:' + method)
     }
-    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }))
   })
-  return { calls, fetchMock }
+  return { calls, landed, nonces, fetchMock }
 }
 
-function fakeWallet(opts: { onSandbox?: boolean } = {}) {
+function fakeWallet(opts: { onSandbox?: boolean; onSign?: (message: string, from: string) => Promise<unknown> } = {}) {
   const calls: Array<{ method: string; params?: unknown }> = []
   const listeners = new Map<string, Array<(...a: unknown[]) => void>>()
   const wallet: EIP1193Provider & { emit: (e: string, ...a: unknown[]) => void } = {
     async request({ method, params }) {
       calls.push({ method, params })
+      const p = (params ?? []) as unknown[]
       switch (method) {
         case 'eth_accounts':
         case 'eth_requestAccounts':
@@ -66,7 +92,8 @@ function fakeWallet(opts: { onSandbox?: boolean } = {}) {
         case 'eth_call':
           return opts.onSandbox ? INFOS_HEX : '0x' // the wallet's own RPC: sandbox or a real chain
         case 'personal_sign':
-          return SIG
+          if (opts.onSign) await opts.onSign(p[0] as string, p[1] as string)
+          return sigFor(p[1] as string)
         case 'eth_sendTransaction':
           return '0x' + 'bb'.repeat(32)
         case 'eth_signTypedData_v4':
@@ -118,8 +145,9 @@ describe('createSandboxProvider', () => {
     expect(calls[1]!.params).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO, ACCT])
     const sent = sandbox.calls.find((c) => c.method === 'fakereum_sendTransaction')!
     expect(sent.params).toEqual([{ to: TO, data: '0x12', value: '0x38d7ea4c68000', nonce: '0x5', gas: '0x5208', signature: SIG }])
+    // the nonce is picked here and passed in, not re-read while building the message
     const asked = sandbox.calls.find((c) => c.method === 'fakereum_transactionMessage')!
-    expect(asked.params).toEqual([{ from: ACCT, to: TO, data: '0x12', value: '0x38d7ea4c68000', gas: '0x5208' }])
+    expect(asked.params).toEqual([{ from: ACCT, to: TO, data: '0x12', value: '0x38d7ea4c68000', nonce: '0x5', gas: '0x5208' }])
   })
 
   it("wallet already on this sandbox: a 'sandbox' account sends through the wallet, an 'upstream' one as a message", async () => {
@@ -170,5 +198,236 @@ describe('createSandboxProvider', () => {
     await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
     await new Promise((r) => setTimeout(r, 0))
     expect(kindCalls()).toBe(4) // a landed send pins the account server-side: refetch once
+  })
+})
+
+describe('nonces on concurrent signed-message sends', () => {
+  let sandbox: ReturnType<typeof fakeSandbox>
+  beforeEach(() => {
+    sandbox = fakeSandbox({ [ACCT]: { kind: 'upstream', pinned: true }, [OTHER]: { kind: 'upstream', pinned: true } }, { [ACCT]: 5, [OTHER]: 9 })
+    vi.stubGlobal('fetch', sandbox.fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** A signing prompt that only resolves when the test says so. */
+  function gatedSigner() {
+    const pending: Array<() => void> = []
+    const seen: string[] = []
+    const onSign = (message: string) => {
+      seen.push(message)
+      return new Promise<void>((resolve) => pending.push(resolve))
+    }
+    return { onSign, pending, seen }
+  }
+
+  it('two sends fired together take consecutive nonces, one prompt at a time', async () => {
+    const gate = gatedSigner()
+    const { wallet } = fakeWallet({ onSign: gate.onSign })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    const a = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    const b = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO, value: '0x1' }] })
+    await new Promise((r) => setTimeout(r, 0))
+
+    // only one prompt is open: the second send is still waiting to be signed
+    expect(gate.pending.length).toBe(1)
+    expect(gate.seen).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO])
+
+    gate.pending[0]!()
+    await a
+    await new Promise((r) => setTimeout(r, 0))
+    expect(gate.seen[1]).toBe('Fakereum Tx #6 on Arbitrum One\nTo: ' + TO)
+
+    gate.pending[1]!()
+    await b
+    expect(sandbox.landed).toEqual([
+      { from: ACCT, nonce: 5n },
+      { from: ACCT, nonce: 6n },
+    ])
+  })
+
+  it('the next nonce is spent at the signature, not at the landing: the second prompt opens while the first is still submitting', async () => {
+    let releaseSend: () => void = () => {}
+    const held = new Promise<void>((r) => (releaseSend = r))
+    let holds = true
+    sandbox = fakeSandbox({ [ACCT]: { kind: 'upstream', pinned: true } }, { [ACCT]: 5 }, async () => {
+      if (holds) {
+        holds = false
+        await held
+      }
+    })
+    vi.stubGlobal('fetch', sandbox.fetchMock)
+
+    const gate = gatedSigner()
+    const { wallet } = fakeWallet({ onSign: gate.onSign })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    const a = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    const b = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO, value: '0x1' }] })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(gate.seen).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO])
+
+    gate.pending[0]!() // the wallet hands back the first signature; its submit is held open
+    await new Promise((r) => setTimeout(r, 0))
+    expect(p.nonces.peek(ACCT)).toBe(6n) // spent already
+    expect(sandbox.landed).toEqual([]) // nothing has landed
+    expect(gate.seen[1]).toBe('Fakereum Tx #6 on Arbitrum One\nTo: ' + TO) // …yet the second prompt is open
+
+    gate.pending[1]!() // sign the second while the first is still in flight
+    await new Promise((r) => setTimeout(r, 0))
+    expect(sandbox.landed).toEqual([]) // submits stay in order: #6 waits for #5
+
+    releaseSend()
+    expect(await Promise.all([a, b])).toEqual([HASH, HASH])
+    expect(sandbox.landed).toEqual([
+      { from: ACCT, nonce: 5n },
+      { from: ACCT, nonce: 6n },
+    ])
+  })
+
+  it('a failed submit strands the follower it already signed, and the send after that recovers', async () => {
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => (release = r))
+    let first = true
+    sandbox = fakeSandbox({ [ACCT]: { kind: 'upstream', pinned: true } }, { [ACCT]: 5 }, async () => {
+      if (!first) return
+      first = false
+      await held
+      throw new Error('network down')
+    })
+    vi.stubGlobal('fetch', sandbox.fetchMock)
+
+    const gate = gatedSigner()
+    const { wallet } = fakeWallet({ onSign: gate.onSign })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    const a = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    const b = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO, value: '0x1' }] })
+    await new Promise((r) => setTimeout(r, 0))
+    gate.pending[0]!() // #5 signed, its submit hangs
+    await new Promise((r) => setTimeout(r, 0))
+    gate.pending[1]!() // #6 signed off the back of it
+    await new Promise((r) => setTimeout(r, 0))
+
+    release() // …and now #5 never lands
+    await expect(a).rejects.toThrow(/network down/)
+    await expect(b).rejects.toThrow(/correct nonce/) // #6 was signed against a nonce that never arrived
+    expect(p.nonces.peek(ACCT)).toBeUndefined()
+
+    // the account is untouched, so the next send takes 5 again
+    const c = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(gate.seen[2]).toBe('Fakereum Tx #5 on Arbitrum One\nTo: ' + TO)
+    gate.pending[2]!()
+    expect(await c).toBe(HASH)
+    expect(sandbox.landed).toEqual([{ from: ACCT, nonce: 5n }])
+  })
+
+  it('a malformed signature spends nothing and is never submitted', async () => {
+    const { wallet } = fakeWallet({ onSign: async () => {} })
+    const bad: EIP1193Provider = {
+      request: (args) => (args.method === 'personal_sign' ? Promise.resolve('0xdeadbeef') : wallet.request(args)),
+    }
+    const p = createSandboxProvider({ sandbox: RPC, wallet: bad })
+
+    await expect(p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).rejects.toThrow(/malformed signature/)
+    expect(p.nonces.peek(ACCT)).toBeUndefined()
+    expect(sandbox.calls.some((c) => c.method === 'fakereum_sendTransaction')).toBe(false)
+  })
+
+  it('different accounts are not serialized against each other', async () => {
+    const gate = gatedSigner()
+    const { wallet } = fakeWallet({ onSign: gate.onSign })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    const a = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    const b = p.request({ method: 'eth_sendTransaction', params: [{ from: OTHER, to: TO }] })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(gate.pending.length).toBe(2)
+    expect(gate.seen.sort()).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO, 'Fakereum Tx #9 on Arbitrum One\nTo: ' + TO])
+    gate.pending[0]!()
+    gate.pending[1]!()
+    await Promise.all([a, b])
+    expect(sandbox.landed.map((l) => l.nonce).sort()).toEqual([5n, 9n])
+  })
+
+  it('a rejected signature frees the nonce for the next send', async () => {
+    let reject = true
+    const { wallet } = fakeWallet({
+      onSign: async () => {
+        if (reject) throw new ProviderRpcError(4001, 'User rejected the request.')
+      },
+    })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    await expect(p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).rejects.toMatchObject({ code: 4001 })
+    reject = false
+    expect(await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).toBe(HASH)
+    expect(sandbox.landed).toEqual([{ from: ACCT, nonce: 5n }]) // the rejected one did not burn nonce 5
+  })
+
+  it('cancelling the first of two queued sends hands its nonce to the second', async () => {
+    const gate = gatedSigner()
+    const reject: Array<(e: unknown) => void> = []
+    const { wallet } = fakeWallet({
+      onSign: (message) => {
+        gate.seen.push(message)
+        return new Promise<void>((resolve, rejectFn) => {
+          gate.pending.push(resolve)
+          reject.push(rejectFn)
+        })
+      },
+    })
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+
+    const a = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    const b = p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO, value: '0x1' }] })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(gate.seen).toEqual(['Fakereum Tx #5 on Arbitrum One\nTo: ' + TO])
+
+    reject[0]!(new ProviderRpcError(4001, 'User rejected the request.'))
+    await expect(a).rejects.toMatchObject({ code: 4001 }) // the dapp still sees the cancellation
+    await new Promise((r) => setTimeout(r, 0))
+
+    // the second prompt opens on nonce 5 — the cancelled one never took it
+    expect(gate.seen[1]).toBe('Fakereum Tx #5 on Arbitrum One\nTo: ' + TO)
+    gate.pending[1]!()
+    expect(await b).toBe(HASH)
+    expect(sandbox.landed).toEqual([{ from: ACCT, nonce: 5n }])
+  })
+
+  it('an explicit tx.nonce is used as given', async () => {
+    const { wallet } = fakeWallet()
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+    await expect(p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO, nonce: '0x7' }] })).rejects.toThrow(/correct nonce/)
+    expect(sandbox.calls.some((c) => c.method === 'eth_getTransactionCount')).toBe(false)
+  })
+
+  it('follows the sandbox when it moves the account on by itself', async () => {
+    const { wallet } = fakeWallet()
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+    await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    expect(p.nonces.peek(ACCT)).toBe(6n)
+
+    sandbox.nonces.set(ACCT.toLowerCase(), 11n) // the same account sent from somewhere else
+    expect(await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).toBe(HASH)
+    expect(sandbox.landed.map((l) => l.nonce)).toEqual([5n, 11n])
+  })
+
+  it('drops a hint the sandbox has rewound past, and forgets everything when the sandbox is cleared', async () => {
+    const { wallet } = fakeWallet()
+    const p = createSandboxProvider({ sandbox: RPC, wallet })
+    await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })
+    expect(p.nonces.peek(ACCT)).toBe(6n)
+
+    sandbox.nonces.set(ACCT.toLowerCase(), 2n) // rewound underneath us
+    await expect(p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).rejects.toThrow(/correct nonce/)
+    expect(p.nonces.peek(ACCT)).toBeUndefined() // the stale hint is gone
+    expect(await p.request({ method: 'eth_sendTransaction', params: [{ from: ACCT, to: TO }] })).toBe(HASH)
+    expect(sandbox.landed.map((l) => l.nonce)).toEqual([5n, 2n])
+
+    await p.request({ method: 'fakereum_clearSandbox' })
+    expect(p.nonces.peek(ACCT)).toBeUndefined()
   })
 })

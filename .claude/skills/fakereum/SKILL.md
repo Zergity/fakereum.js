@@ -113,9 +113,10 @@ The wrapper routes state reads to the sandbox, sends `eth_sendTransaction` as a 
 tx (or through the wallet when the wallet is already on this sandbox and the account is of the
 `sandbox` kind), refuses `eth_signTypedData*` / `eth_sign` for `upstream` accounts with error
 code 4100, and caches account kinds per address — refreshed on `accountsChanged`, frozen once
-pinned. `discover()`, `accountKind()`, `transactionMessage()` / `sendTransaction()` and the
-offline `buildTransactionMessage()` are exported for hand-rolled flows. The rest of this section
-explains what it does, for dapps that wire things themselves.
+pinned. It also orders an account's signed-message sends so two fired together can't sign the
+same nonce. `discover()`, `accountKind()`, `transactionMessage()` / `sendTransaction()`, the
+offline `buildTransactionMessage()` and `createNonceManager()` are exported for hand-rolled
+flows. The rest of this section explains what it does, for dapps that wire things themselves.
 
 There are two ways to put a dapp on a sandbox, and they differ in who knows about the fork.
 Pick one deliberately; the send path in step 3 depends on it.
@@ -228,13 +229,19 @@ signature to `infos.rpc`; the tx lands as a normal sandbox transaction from `acc
 nonce, gas and fee, real tx hash) and you poll its receipt on `infos.rpc` as usual:
 
 ```ts
-/** Drop-in for eth_sendTransaction on the sandbox. */
+/** Drop-in for eth_sendTransaction on the sandbox. One at a time — see the nonce note below. */
 async function sendViaSignedMessage(tx: { to: string; value?: string; data?: string; gas?: string }) {
   const { message, nonce } = await sandboxRpc('fakereum_transactionMessage', [{ from: account, ...tx }])
   const signature = await window.ethereum.request({ method: 'personal_sign', params: [message, account] })
   return sandboxRpc('fakereum_sendTransaction', [{ ...tx, nonce, signature }]) as Promise<`0x${string}`>
 }
 ```
+
+There is no mempool: the signed nonce has to equal the account's nonce at the moment the send
+arrives. Two calls started together both read the same nonce while the first prompt is open, and
+whichever lands second is rejected. Sign one at a time per account, counting a nonce as spent
+once the signature comes back, and POST in that order — or use `createNonceManager()` from the
+SDK, which does exactly that.
 
 The Value line prints the amount in native units with up to 18 decimals, so any wei value is
 exact. Full message format and rules in the next-but-one section.
@@ -359,7 +366,8 @@ Rules that bite:
   To line reads `CREATE` and the receipt carries `contractAddress` as usual.
 
 - **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
-  from the first call's result (or `eth_getTransactionCount`). `gas`, `gasPrice` or
+  from the first call's result (or `eth_getTransactionCount`), and don't let two pending sends
+  for one account read it at the same time. `gas`, `gasPrice` or
   `maxFeePerGas`/`maxPriorityFeePerGas` are optional, 0x-hex as in `eth_sendTransaction`.
 - **It is a real tx.** Nonce must match, and the sender pays `gas * price + value` in FETH
   exactly as with a raw tx (the sandbox lowers its baseFee to your cap if that is below it,

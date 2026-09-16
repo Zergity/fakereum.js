@@ -14,10 +14,17 @@
 // Account kinds come from fakereum_accountKind and are cached per address: an
 // entry is refreshed on accountsChanged (and after a send) until the sandbox
 // reports it pinned, after which it is frozen for the life of the provider.
+//
+// Signed-message sends for one account get their nonces from a NonceManager
+// (nonce.ts) — without it, two sends started together sign the same nonce and
+// the second is rejected. It signs one at a time, counting a nonce as spent
+// once the wallet returns the signature, and submits in that order. Sends that
+// go through the wallet keep the wallet's own nonce handling.
 
 import { discover, type Infos } from './discover'
 import { ProviderRpcError, rpc, type EIP1193Provider, type RequestArguments } from './rpc'
 import { accountKind, sendTransaction, transactionMessage, type AccountKindInfo, type TxRequest } from './sandbox'
+import { createNonceManager, type NonceManager } from './nonce'
 import type { Hex } from './hex'
 
 export type SendMode = 'auto' | 'message' | 'wallet'
@@ -36,6 +43,12 @@ export interface SandboxProviderOptions {
    * 'upstream'-kind accounts always send signed messages.
    */
   sendMode?: SendMode
+  /**
+   * Allocates the nonce for signed-message sends and orders them per account.
+   * Defaults to one over this sandbox's RPC; pass your own to share it with
+   * code that calls transactionMessage/sendTransaction directly.
+   */
+  nonceManager?: NonceManager
 }
 
 export interface SandboxProvider extends EIP1193Provider {
@@ -48,6 +61,14 @@ export interface SandboxProvider extends EIP1193Provider {
   kind(address: string): Promise<AccountKindInfo>
   /** Drop cached, unpinned kinds so the next lookup refetches. */
   refreshKinds(): void
+  /** The nonce manager behind signed-message sends. */
+  readonly nonces: NonceManager
+  /**
+   * Forget the nonce tracked for an account (or all of them) so the next send
+   * re-reads it from the sandbox. Needed after fakereum_clearSandbox, or after
+   * the account sends from somewhere else.
+   */
+  resetNonces(address?: string): void
 }
 
 /** Methods that only the wallet can answer. Everything else is state and goes to the sandbox. */
@@ -81,6 +102,7 @@ export function createSandboxProvider(opts: SandboxProviderOptions): SandboxProv
   const sendMode: SendMode = opts.sendMode ?? 'auto'
   const rpcUrl = typeof opts.sandbox === 'string' ? opts.sandbox : opts.sandbox.rpc!
   if (!rpcUrl) throw new Error('createSandboxProvider: sandbox infos carry no rpc URL')
+  const nonces = opts.nonceManager ?? createNonceManager(rpcUrl)
 
   let infosPromise: Promise<Infos> | null = typeof opts.sandbox === 'string' ? null : Promise.resolve(opts.sandbox)
   const infos = (): Promise<Infos> =>
@@ -129,14 +151,23 @@ export function createSandboxProvider(opts: SandboxProviderOptions): SandboxProv
   const accounts = async (): Promise<string[]> => (await wallet.request({ method: 'eth_accounts' })) as string[]
 
   // --- eth_sendTransaction ---------------------------------------------------
-  const sendViaMessage = async (tx: TxRequest, from: string): Promise<Hex> => {
-    const { message, nonce } = await transactionMessage(rpcUrl, { ...tx, from })
-    const signature = (await wallet.request({ method: 'personal_sign', params: [message, from] })) as string
-    const { from: _from, ...rest } = tx
-    const hash = await sendTransaction(rpcUrl, { ...rest, nonce, signature })
-    repin(from)
-    return hash
-  }
+  const sendViaMessage = (tx: TxRequest, from: string): Promise<Hex> =>
+    nonces.signAndSend(
+      from,
+      {
+        sign: async (nonce) => {
+          const { message } = await transactionMessage(rpcUrl, { ...tx, from, nonce })
+          return (await wallet.request({ method: 'personal_sign', params: [message, from] })) as string
+        },
+        submit: async (nonce, signature) => {
+          const { from: _from, ...rest } = tx
+          const hash = await sendTransaction(rpcUrl, { ...rest, nonce, signature })
+          repin(from)
+          return hash
+        },
+      },
+      tx.nonce,
+    )
 
   const handleSend = async (params: unknown[] | undefined): Promise<unknown> => {
     const tx = (Array.isArray(params) ? params[0] : undefined) as TxRequest | undefined
@@ -178,7 +209,10 @@ export function createSandboxProvider(opts: SandboxProviderOptions): SandboxProv
       return wallet.request(args)
     }
     if (WALLET_METHODS.has(method) || method.startsWith('wallet_')) return wallet.request(args)
-    return rpc(rpcUrl, method, params ?? [])
+    const result = await rpc(rpcUrl, method, params ?? [])
+    // A cleared sandbox rewinds every account to its upstream nonce.
+    if (method === 'fakereum_clearSandbox') nonces.reset()
+    return result
   }
 
   const onAccountsChanged = (): void => refreshKinds()
@@ -195,6 +229,8 @@ export function createSandboxProvider(opts: SandboxProviderOptions): SandboxProv
     infos,
     kind,
     refreshKinds,
+    nonces,
+    resetNonces: (address) => nonces.reset(address),
     on: (event, listener) => wallet.on?.(event, listener),
     removeListener: (event, listener) => wallet.removeListener?.(event, listener),
   }

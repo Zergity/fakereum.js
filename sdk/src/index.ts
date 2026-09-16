@@ -23,5 +23,6 @@ export {
   type ImportRecord,
   type ImportSources,
 } from './sandbox'
+export { createNonceManager, isNonceError, type NonceManager, type NonceManagerOptions, type NonceSteps } from './nonce'
 export { createSandboxProvider, type SandboxProvider, type SandboxProviderOptions, type SendMode } from './provider'
 export { checksumAddress, keccak256, toQuantity, type Hex } from './hex'
