@@ -98,8 +98,12 @@ new_sqlite_classes = ["EvmSandbox"]
 #                             may transact.
 #   IMPERSONATE               seed impersonator mappings "B:A,B2:A2"
 #                             (impersonator:impersonatee).
-#   RATE_LIMIT_RPS            per-IP rate limit (req/s); <=0 disables. (Go
-#                             burst=100 is auto-derived here as 2*rps=100.)
+#   RATE_LIMIT_RPS            per-IP rate limit (req/s); <=0 disables. Burst is
+#                             auto-derived as 2*rps (the Go port's fixed 100).
+#                             Keyed by CF-Connecting-IP and enforced inside the
+#                             DO, so the bucket is globally exact, not
+#                             per-isolate. The bucket starts full, so the burst
+#                             is what a dapp's page-load fan-out spends first.
 #   RATE_LIMIT_EXEMPT         comma-separated IPs/CIDRs (v4 or v6) that bypass
 #                             the rate limit. The per-IP key is
 #                             CF-Connecting-IP, so loopback/private entries
@@ -199,5 +203,5 @@ ETH_CALL_STORAGE_MODE = "stateOverride"
 CACHE_TTL = "12"
 REJECT_UPSTREAM_SIGNERS = "true"
 IMPERSONATE = ""
-RATE_LIMIT_RPS = "50"
+RATE_LIMIT_RPS = "200"
 RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
