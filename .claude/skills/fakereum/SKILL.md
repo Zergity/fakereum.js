@@ -1,36 +1,45 @@
 ---
 name: fakereum
-description: Point dapps, wallets, or blockchain tooling at a Fakereum forked-EVM sandbox. Use when overriding a project's RPC endpoint or Etherscan getLogs API to a Fakereum instance, or when detecting a sandbox and reading its rpc/etherscan endpoints via an eth_call to the discovery sentinel (0x…fa4e). Covers the live Arbitrum sandbox at fakereum-42161.derion.io, wallet / viem / ethers / foundry setup, the getLogs proxy, the dapp integration flow for a fork-aware dapp with a normal wallet or a wallet repointed to the sandbox (fakereum_accountKind: 'upstream' accounts send EIP-191 signed-message txs only and are never asked for EIP-712 / Permit2; 'sandbox' accounts may sign EIP-712; pinned at the account's first landed tx), and the replay guard.
+description: Point dapps, wallets, or blockchain tooling at a Fakereum forked-EVM sandbox, and send transactions on one. The main send path is the EIP-191 signed-message transaction (fakereum_transactionMessage -> personal_sign -> fakereum_sendTransaction), which works from a wallet on any chain and is the only path allowed for accounts funded on the real chain. Use when overriding a project's RPC endpoint or Etherscan getLogs API to a Fakereum instance, when detecting a sandbox and reading its rpc/etherscan endpoints via an eth_call to the discovery sentinel (0x…fa4e), or when wiring a dapp's send flow. Covers the live sandboxes at fakereum-42161.derion.io (Arbitrum One), fakereum-4663.derion.io (Robinhood Chain) and fakereum-43111.derion.io (Hemi), wallet / viem / ethers / foundry setup, the getLogs proxy, the dapp integration flow for a fork-aware dapp with a normal wallet or a wallet repointed to the sandbox (fakereum_accountKind: 'upstream' accounts send signed-message txs only and are never asked for EIP-712 / Permit2; 'sandbox' accounts may sign EIP-712; pinned at the account's first landed tx), and the replay guard on raw transactions.
 ---
 
 # Fakereum sandbox
 
 Fakereum fronts a real EVM RPC and executes signed transactions **locally** against a
-sticky state overlay layered on `upstream@latest`. Reads merge real chain state with the
+sticky overlay of sandbox writes stacked on the real chain's current state (re-read at
+the `latest` block on every request — there is no pinned fork block). Reads merge real chain state with the
 sandbox's local diffs, served over both Ethereum JSON-RPC and an Etherscan-v2-compatible
 API. Nothing you send ever reaches the real chain — it's a shared, persistent fork you can
 mutate freely.
 
-Practically, using a sandbox means overriding two endpoints in whatever tool you already
-use: the **RPC URL** and (for log queries) the **Etherscan API base**. Both are
-self-describing via an on-chain discovery call, so you rarely need to hardcode them.
+Two things to get right:
 
-## Live deployment (Arbitrum One fork)
+1. **Sending.** A transaction is normally an **EIP-191 signed message**: the wallet signs a
+   short readable text with `personal_sign` and the sandbox executes a real transaction
+   from the recovered signer. The wallet can stay on whatever network it is on, and the
+   signature is worthless anywhere else — which is why an account holding real funds may
+   only send this way. Raw `eth_sendRawTransaction` also works, but the replay guard
+   refuses it from any account funded on the real chain. See *Send a transaction* below.
+2. **Reading.** Override two endpoints in whatever tool you already use: the **RPC URL**
+   and (for log queries) the **Etherscan API base**. Both are self-describing via an
+   on-chain discovery call, so you rarely need to hardcode them.
 
-The current instance forks Arbitrum One. Base URL: `https://fakereum-42161.derion.io`
+## Deployments
 
-| | |
-|---|---|
-| Network name | Fake Arbitrum One |
-| Chain ID | `42161` (`0xa4b1`) — same as real Arbitrum, so wallets need no re-add |
-| Currency | `FETH` |
-| RPC | `https://fakereum-42161.derion.io/rpc` |
-| Etherscan API | `https://fakereum-42161.derion.io/api` and `/v2/api` |
-| Explorer | `https://fakereum-42161.derion.io/` (`/txs`, `/accounts`, `/import`, `/admin`) |
-| Upstream | Arbitrum One via `https://arbitrum-one-rpc.publicnode.com` |
+One sandbox per upstream chain. Each serves `<base>/rpc` (JSON-RPC), `<base>/api` and
+`<base>/v2/api` (Etherscan-compatible logs), and an explorer at `<base>/` with `/txs`,
+`/accounts`, `/import` and `/admin`.
 
-The chain id deliberately matches real Arbitrum, which is exactly why the **replay guard**
-below is on — read that before sending transactions.
+| fork | base URL | chain id | currency |
+|---|---|---|---|
+| Fake Arbitrum One | `https://fakereum-42161.derion.io` | `42161` (`0xa4b1`) | `FETH` |
+| Fake Robinhood Chain | `https://fakereum-4663.derion.io` | `4663` (`0x1237`) | `FETH` |
+| Fake Hemi | `https://fakereum-43111.derion.io` | `43111` (`0xa867`) | `FETH` |
+
+Each chain id deliberately matches the real chain's, which is exactly why the **replay
+guard** is on — a raw transaction signed here would also be valid upstream. Signed-message
+transactions are the way around that, and the reason they are the default. Examples below
+use the Arbitrum fork; nothing here is specific to it.
 
 ## Discovery: read a sandbox's endpoints with one eth_call
 
@@ -94,6 +103,92 @@ cast abi-decode 'infos()(string)' \
 
 If you're decoding by hand: it's a plain ABI-encoded `string` — skip the 32-byte offset
 word, read the 32-byte length, then that many UTF-8 bytes, then `JSON.parse`.
+
+## Send a transaction — the EIP-191 signed message
+
+This is the main way to send on a sandbox. A transaction arrives as an
+**EIP-191 signed message**. `personal_sign` is chain-agnostic and never yields anything a node would accept as
+a transaction, so it is safe for accounts that hold real funds upstream and works from a
+wallet parked on any network. The signature binds nonce, recipient, value and calldata; gas
+limit and fee terms are passed unsigned alongside (it's a test sandbox — defaults are filled
+like a wallet would). The sandbox then runs a normal tx from the signer.
+
+```
+fakereum_transactionMessage [{ from?, to?, value?, data?, nonce? }]               → { message, nonce }
+fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
+                            → tx hash
+```
+
+Both go over plain HTTP to the sandbox's `/rpc` — wallets don't relay `fakereum_*` methods,
+so the dapp POSTs them itself and uses the wallet only for `personal_sign`:
+
+```ts
+const SANDBOX = 'https://fakereum-42161.derion.io/rpc'
+const rpc = async (method: string, params: unknown[]) => {
+  const r = await fetch(SANDBOX, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  }).then((r) => r.json())
+  if (r.error) throw new Error(r.error.message)
+  return r.result
+}
+
+/** Drop-in for eth_sendTransaction on the sandbox. One at a time per account — see nonces below. */
+async function send(tx: { to?: string; value?: string; data?: string; gas?: string }) {
+  const { message, nonce } = await rpc('fakereum_transactionMessage', [{ from: account, ...tx }])
+  const signature = await window.ethereum.request({ method: 'personal_sign', params: [message, account] })
+  return rpc('fakereum_sendTransaction', [{ ...tx, nonce, signature }]) as Promise<`0x${string}`>
+}
+```
+
+Or let the SDK do it behind an ordinary EIP-1193 provider (`npm i fakereum-sdk`):
+
+```ts
+import { createSandboxProvider } from 'fakereum-sdk'
+const provider = createSandboxProvider({ sandbox: SANDBOX, wallet: window.ethereum })
+const signer = await new ethers.BrowserProvider(provider).getSigner()
+await signer.sendTransaction({ to, value })     // travels as a signed message
+```
+
+**Nonces.** There is no mempool: the signed nonce must equal the account's nonce when the send
+arrives. Two calls started together both read the same nonce while the first prompt is open, and
+whichever lands second is refused. Sign one at a time per account, counting a nonce as spent once
+a well-formed signature comes back (not when the tx lands), and POST in that order — or use
+`createNonceManager()` from the SDK, which does exactly that. A cancelled prompt spends nothing.
+
+The text the user sees in the wallet, byte for byte (`\n`-joined, no trailing newline; the
+header uses the nonce and `infos.upstreamChainName` — the real chain's name, never "Fake …" — so
+you can also build it yourself):
+
+```
+Fakereum Tx #13 on Arbitrum One
+To: 0xAb58…eC9B                                  ← EIP-55 checksummed; "To: CREATE" for a deploy
+Value: 0.001                                     ← only when value > 0
+Data: 0xa9059cbb and 64 bytes with hash 0x…      ← only when data is non-empty
+```
+
+Rules that bite:
+
+- **Contract creation works:** omit `to` (or pass `null`) and put the init code in `data`; the
+  To line reads `CREATE` and the receipt carries `contractAddress` as usual.
+
+- **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
+  from the first call's result (or `eth_getTransactionCount`), and don't let two pending sends
+  for one account read it at the same time. `gas`, `gasPrice` or
+  `maxFeePerGas`/`maxPriorityFeePerGas` are optional, 0x-hex as in `eth_sendTransaction`.
+- **It is a real tx.** Nonce must match, and the sender pays `gas * price + value` in FETH
+  exactly as with a raw tx (the sandbox lowers its baseFee to your cap if that is below it,
+  as it does for raw txs).
+- **The hash is a real tx hash.** The sandbox builds the tx with the message signature as its
+  v/r/s, so hash and raw bytes look like any tx's; only the sender comes from the message, not
+  from what v/r/s recover to. Resubmitting the same signed message fails (stale nonce, or
+  `already known` for an identical tx).
+- **Not subject to the replay guard** — a signed message can't be broadcast on the real chain,
+  which is the whole point of the signed-message path. One that lands is a write, though: it pins the account's
+  kind like any tx. Impersonation mapping and the impersonatee guard still apply.
+- Receipts and `eth_getTransactionByHash` carry a `signedMessage: {message, signature}`
+  field; `/tx/<hash>` shows the signed text above the raw tx.
 
 ## Integrate a dapp: make it sandbox-aware
 
@@ -237,14 +332,8 @@ async function sendViaSignedMessage(tx: { to: string; value?: string; data?: str
 }
 ```
 
-There is no mempool: the signed nonce has to equal the account's nonce at the moment the send
-arrives. Two calls started together both read the same nonce while the first prompt is open, and
-whichever lands second is rejected. Sign one at a time per account, counting a nonce as spent
-once the signature comes back, and POST in that order — or use `createNonceManager()` from the
-SDK, which does exactly that.
-
-The Value line prints the amount in native units with up to 18 decimals, so any wei value is
-exact. Full message format and rules in the next-but-one section.
+One at a time per account — the nonce rule and the full message format are in
+*Send a transaction* above.
 
 **3a. `kind === 'upstream'` → signed messages only, and never EIP-712.** In both setups every
 send goes through `sendViaSignedMessage`. Funding is not an issue: the account already holds
@@ -287,7 +376,7 @@ account (real ETH on Arbitrum) arrives with 1000× that in FETH and can pay gas 
 straight away through signed messages; an empty burner arrives with nothing.
 
 Funds on **another** chain can be brought in once per account at `<base>/import`
-(Ethereum Mainnet, Arbitrum One, Base, Robinhood Chain — minus the sandbox's own upstream,
+(Ethereum Mainnet, Arbitrum One, Base, Hemi, Robinhood Chain — minus the sandbox's own upstream,
 which is automatic). The page lists the account's balance on each source; the user picks one
 and `personal_sign`s
 
@@ -307,12 +396,15 @@ like a landed tx.
 ## Override the RPC endpoint
 
 Everything except the local-execution behavior is standard JSON-RPC, so point your existing
-config at `…/rpc`.
+config at `…/rpc`. This is for **reads** and for key-holding scripts; a dapp's user does not
+need any of it, because signed-message sends work from an untouched wallet.
 
-**Wallet** — open the sandbox's landing page and click *Add to wallet*, or call
+**Wallet (optional)** — open the sandbox's landing page and click *Add to wallet*, or call
 `wallet_addEthereumChain` with `rpcUrls: ['https://fakereum-42161.derion.io/rpc']`,
 `chainId: '0xa4b1'`, `nativeCurrency.symbol: 'FETH'`. (Because the chain id equals real
-Arbitrum, a wallet already on Arbitrum only needs its RPC URL repointed.)
+Arbitrum, a wallet already on Arbitrum only needs its RPC URL repointed.) A repointed wallet
+can `eth_sendTransaction` straight to the sandbox — but only from an account that is empty on
+the real chain; anything else still has to go through the signed-message path.
 
 **viem / wagmi**
 
@@ -334,54 +426,6 @@ const client = createPublicClient({ chain: fakeArbitrum, transport: http() })
 **foundry** — add `--rpc-url https://fakereum-42161.derion.io/rpc` to `cast` / `forge script`
 / `forge create`. Reads see the merged fork state; broadcasts stay in the sandbox.
 
-## Send a transaction with personal_sign — the EIP-191 message in detail
-
-Reference for the signed-message send in step 3 above. A sandbox accepts a transaction as an
-**EIP-191 signed message**. `personal_sign` is chain-agnostic and never yields anything a node would accept as
-a transaction, so it is safe for accounts that hold real funds upstream and works from a
-wallet parked on any network. The signature binds nonce, recipient, value and calldata; gas
-limit and fee terms are passed unsigned alongside (it's a test sandbox — defaults are filled
-like a wallet would). The sandbox then runs a normal tx from the signer.
-
-```
-fakereum_transactionMessage [{ from?, to?, value?, data?, nonce? }]               → { message, nonce }
-fakereum_sendTransaction    [{ to?, value?, data?, nonce, gas?, gasPrice? | maxFeePerGas?, maxPriorityFeePerGas?, signature }]
-                            → tx hash
-```
-
-The text the user sees in the wallet, byte for byte (`\n`-joined, no trailing newline; the
-header uses the nonce and `infos.upstreamChainName` — the real chain's name, never "Fake …" — so
-you can also build it yourself):
-
-```
-Fakereum Tx #13 on Arbitrum One
-To: 0xAb58…eC9B                                  ← EIP-55 checksummed; "To: CREATE" for a deploy
-Value: 0.001                                     ← only when value > 0
-Data: 0xa9059cbb and 64 bytes with hash 0x…      ← only when data is non-empty
-```
-
-Rules that bite:
-
-- **Contract creation works:** omit `to` (or pass `null`) and put the init code in `data`; the
-  To line reads `CREATE` and the receipt carries `contractAddress` as usual.
-
-- **`nonce` is required** by `fakereum_sendTransaction` — it is in the header line. Take it
-  from the first call's result (or `eth_getTransactionCount`), and don't let two pending sends
-  for one account read it at the same time. `gas`, `gasPrice` or
-  `maxFeePerGas`/`maxPriorityFeePerGas` are optional, 0x-hex as in `eth_sendTransaction`.
-- **It is a real tx.** Nonce must match, and the sender pays `gas * price + value` in FETH
-  exactly as with a raw tx (the sandbox lowers its baseFee to your cap if that is below it,
-  as it does for raw txs).
-- **The hash is a real tx hash.** The sandbox builds the tx with the message signature as its
-  v/r/s, so hash and raw bytes look like any tx's; only the sender comes from the message, not
-  from what v/r/s recover to. Resubmitting the same signed message fails (stale nonce, or
-  `already known` for an identical tx).
-- **Not subject to the replay guard** — a signed message can't be broadcast on the real chain,
-  which is the whole point of the signed-message path. One that lands is a write, though: it pins the account's
-  kind like any tx. Impersonation mapping and the impersonatee guard still apply.
-- Receipts and `eth_getTransactionByHash` carry a `signedMessage: {message, signature}`
-  field; `/tx/<hash>` shows the signed text above the raw tx.
-
 ## Override the Etherscan API — logs only
 
 The `/api` and `/v2/api` paths are an Etherscan **v2**-compatible proxy, but **only
@@ -399,7 +443,10 @@ curl 'https://fakereum-42161.derion.io/v2/api?module=logs&action=getLogs\
 
 Details that matter:
 
-- **`apikey` is required** and forwarded upstream as-is — use your own real Etherscan v2 key.
+- **`apikey` is required** on a sandbox whose upstream explorer is Etherscan (the Arbitrum
+  one) and is forwarded upstream as-is — use your own real Etherscan v2 key. A sandbox fronting
+  a Blockscout explorer (the Robinhood Chain one) fills in the operator's key when you send
+  none.
 - **`chainid` is forced** to the upstream chain id server-side. You can send the sandbox's
   chain id (tools parrot it back); it gets replaced with the real one before the upstream
   call, so you don't have to special-case it.
@@ -407,20 +454,24 @@ Details that matter:
 - Do **not** expect `getabi`, `txlist`, `tokentx`, contract verification, or any non-logs
   module to work here — they aren't proxied. Keep those pointed at the real explorer.
 
-## Replay guard — which wallet you sign from matters
+## Replay guard — why raw transactions are the restricted path
 
-Because the sandbox shares Arbitrum's chain id, a transaction signed here could in principle
-be replayed onto the real chain. The guard blocks that: `eth_sendRawTransaction` is
-**rejected if the signer is of the `upstream` kind** — it held native balance on real Arbitrum
-at its first landed sandbox transaction (`fakereum_accountKind`; the verdict is pinned then and
-never re-read). Such an account sends through the EIP-191 signed-message path instead (step 3a
-above), which is exempt — a `personal_sign` message is not a broadcastable tx. The same
-reasoning is why a dapp must not request EIP-712 signatures (Permit, Permit2, orders) from
-that account while on the sandbox: the guard cannot see those, and they replay upstream just
-as a raw tx would. Sign only from a
-wallet that is empty on the real chain (zero upstream balance) and funded with FETH inside
-the sandbox, or use signed messages. A zero-real-balance account is fine even if it has nonce
-or code upstream — the check keys on balance only, and once pinned `sandbox` it stays so.
+Because the sandbox shares the real chain's id, a *raw* transaction signed here would also be
+valid upstream, so it could be replayed for real. That is the whole reason the signed-message
+path exists and is the default. The guard enforces it: `eth_sendRawTransaction` is
+**rejected if the signer is of the `upstream` kind** — it held native balance on the real
+chain at its first landed sandbox transaction (`fakereum_accountKind`; the verdict is pinned
+then and never re-read). Such an account sends signed messages instead (step 3a above), which
+are exempt: a `personal_sign` message is not a broadcastable transaction.
+
+The same reasoning is why a dapp must not request EIP-712 signatures (Permit, Permit2, orders)
+from that account while on the sandbox — the guard cannot see those, and they replay upstream
+just as a raw tx would.
+
+So: use signed messages, or sign raw transactions only from a wallet that is empty on the real
+chain and funded with FETH inside the sandbox. A zero-real-balance account qualifies even if it
+has nonce or code upstream — the check keys on balance only — and once pinned `sandbox` it
+stays so.
 
 ## Run your own sandbox
 
@@ -438,6 +489,9 @@ specific to the Arbitrum deployment. Deploy steps are in the repo README.
 
 ## Good to know
 
+- **Sending, in one line:** `fakereum_transactionMessage` → `personal_sign` →
+  `fakereum_sendTransaction`, POSTed to the sandbox's `/rpc`. Raw `eth_sendRawTransaction`
+  only from accounts empty on the real chain.
 - **One sandbox per deployment** (one upstream → one sandbox chain id); state is shared and
   persistent across everyone hitting it.
 - Balances: 1000× the upstream balance until an account's first sandbox tx; `/import` brings
@@ -446,4 +500,4 @@ specific to the Arbitrum deployment. Deploy steps are in the repo README.
   transaction touching a large cold-state graph can fail with "Too many subrequests." Normal
   transfers and moderate contract calls are fine.
 - `eth_subscribe` serves sandbox-driven `newHeads`/`logs` only (upstream push isn't bridged).
-- Source: https://github.com/Zergity/fakereum
+- Source: https://github.com/Zergity/fakereum.js
