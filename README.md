@@ -202,9 +202,9 @@ calls.
 
 ```
             ┌───────────────── Cloudflare edge ──────────────────┐
- dapp ─────▶│  Pages project  fakereum-<chainid>                 │
- wallet     │    public/_worker.js — thin forwarder              │
-            │  Worker  fakereum-<chainid>-rpc                    │
+ dapp ─────▶│  Worker  fakereum-<chainid>-rpc                    │
+ wallet     │    fakereum-<chainid>.derion.io  (custom domain)   │
+            │    fakereum-<chainid>-rpc.workers.dev              │
             │    src/index.ts — thin forwarder                   │
             │                │ stub.fetch(request)               │
             │                ▼                                   │
@@ -218,12 +218,14 @@ calls.
                   upstream RPC(s), upstream explorer
 ```
 
-Both front doors — the Worker's own `*.workers.dev` host and the Pages custom
-domain — resolve the Durable Object by the same fixed name (`fakereum`), so
-they address one instance and share all state. Pages cannot host a Durable
-Object, so its `_worker.js` binds the class cross-script from the companion
-Worker. One deployment per upstream chain, side by side as wrangler
-environments.
+Both hostnames resolve the Durable Object by the same fixed name (`fakereum`),
+so they address one instance and share all state. The public name is a Workers
+Custom Domain declared in the chain's environment, which means Cloudflare
+provisions its DNS record and certificate during `wrangler deploy` — there is
+no separate front-door resource. The `workers.dev` host stays enabled as a
+diagnostic entrance: a custom domain on the zone replaces a Worker's 5xx body
+with Cloudflare's own error page, which hides the diagnostic the Worker wrote.
+One deployment per upstream chain, side by side as wrangler environments.
 
 ### Why a Durable Object runs the EVM
 
@@ -361,22 +363,23 @@ npm run dev                        # wrangler dev, config from .dev.vars
 
 Each upstream chain is its own deployment, kept side by side:
 
-- `wrangler.toml` `[env.<chainid>]` — the Worker name and its `[vars]`
-- `pages/<chainid>/wrangler.toml` — that chain's public Pages front door
+- `wrangler.toml` `[env.<chainid>]` — the Worker name, its public hostname
+  (`routes` + `workers_dev`) and its `[vars]`
 - `.prod.vars.<chainid>` (gitignored) — its secrets; see `.prod.vars.example`
 
 ```sh
 npm run deploy:secrets -- 42161    # first deploy of a chain: code + secrets
 npm run deploy -- 42161            # later deploys (secrets are preserved)
-npm run deploy:pages -- 42161      # the public front door
 npm run build                      # wrangler deploy --dry-run: measure the bundle
 ```
 
-Deploy the Worker before the Pages project — the Pages forwarder binds the
-Durable Object class cross-script, so the class has to exist first. A bare
-`wrangler deploy` without `--env` would create a stray top-level worker; the
-top-level config exists only so `wrangler dev` and `npm run build` work without
-picking an environment.
+That single deploy also creates the custom domain and its DNS record, so a new
+chain needs no dashboard step. Two keys in the environment block are easy to
+miss: `routes` and `workers_dev` are both non-inheritable, and declaring
+`routes` disables the `workers.dev` host unless `workers_dev = true` says
+otherwise. A bare `wrangler deploy` without `--env` would create a stray
+top-level worker; the top-level config exists only so `wrangler dev` and
+`npm run build` work without picking an environment.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`.
 
@@ -1156,7 +1159,6 @@ src/import_balance.ts     cross-chain balance import
 src/impersonate/          B↔A map, request/response NAT, admin RPCs
 src/ui/                   landing, explorer, lists, import, admin pages
 src/lib/                  hex, chains, blocktag, eip191, eip712, cors, rate limit, ipnet
-pages/<chainid>/          per-chain Pages front door
 sdk/                      fakereum-sdk, the client package
 test/, sdk/test/          vitest suites + two live smoke scripts
 ```
@@ -1166,8 +1168,8 @@ test/, sdk/test/          vitest suites + two live smoke scripts
 As of the last check: **196 tests across 16 files pass** (`npm test`), and the
 worker bundles for `workerd` at **~317 KB gzip** (`npm run build`), comfortably
 under the Free plan's 3 MB script limit. Three forks are configured and
-deployed — Arbitrum One, Robinhood Chain and Hemi — each as its own Worker,
-Durable Object and Pages front door.
+deployed — Arbitrum One, Robinhood Chain and Hemi — each as its own Worker and
+Durable Object, reachable on its own derion.io hostname.
 
 Free-plan constraints shape several defaults:
 

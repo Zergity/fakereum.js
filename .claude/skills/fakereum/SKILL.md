@@ -476,8 +476,9 @@ stays so.
 ## Run your own sandbox
 
 Fakereum is open source and self-hostable — anyone can stand one up on Cloudflare's **free
-tier**: a Worker that hosts the EVM Durable Object (it gets the 30s CPU budget the EVM
-needs) plus a Pages project for the public URL. Each deployment forks a single upstream
+tier**: one Worker per chain, hosting the EVM Durable Object (it gets the 30s CPU budget
+the EVM needs) and carrying the public hostname as a custom domain, which Cloudflare
+provisions at deploy time. Each deployment forks a single upstream
 chain and runs under its own **chain id** — set `CHAIN_ID` explicitly, or leave it `0` to
 auto-derive `420<upstreamId>` (e.g. Ethereum mainnet → `4201`). You can also reuse the real
 chain id, as the Arbitrum instance does (`42161`), so wallets need no network switch — that
