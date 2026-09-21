@@ -9,10 +9,19 @@
 # ([env.<upstreamChainId>] blocks below). Always deploy WITH an environment:
 #   npm run deploy -- <chainid>            plain deploy (secrets preserved)
 #   npm run deploy:secrets -- <chainid>    deploy + upload .prod.vars.<chainid>
-#   npm run deploy:pages -- <chainid>      deploy the pages/<chainid> front door
 # A bare `wrangler deploy` (no --env) would create a stray "fakereum-rpc"
 # worker from this top-level config; the top level exists only so `wrangler
 # dev` and `npm run build` work without picking an environment.
+#
+# Each environment carries its own public hostname as a Workers Custom Domain
+# (`routes` below), so Cloudflare registers the hostname against the script and
+# provisions its DNS record and certificate during the deploy — no second
+# resource, no dashboard step. Two traps, both per-environment because `routes`
+# and `workers_dev` are NON-inheritable keys: declaring `routes` disables the
+# workers.dev host unless `workers_dev = true` restores it, and a hostname can
+# be claimed by only one Cloudflare product at a time. The workers.dev host is
+# worth keeping — a custom domain on the zone replaces a Worker's 5xx body with
+# Cloudflare's own error page, hiding whatever diagnostic the Worker wrote.
 name = "fakereum-rpc"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
@@ -124,10 +133,12 @@ new_sqlite_classes = ["EvmSandbox"]
 
 # ---------------------------------------------------------------------------
 # Arbitrum One (upstream chain id 42161).
-# Front door: pages/42161 -> https://fakereum-42161.derion.io
+# Front door: https://fakereum-42161.derion.io
 # ---------------------------------------------------------------------------
 [env.42161]
 name = "fakereum-42161-rpc"
+routes = [{ pattern = "fakereum-42161.derion.io", custom_domain = true }]
+workers_dev = true
 
 [[env.42161.durable_objects.bindings]]
 name = "EVM_SANDBOX"
@@ -156,10 +167,12 @@ RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
 
 # ---------------------------------------------------------------------------
 # Robinhood Chain (upstream chain id 4663, Arbitrum Orbit L2).
-# Front door: pages/4663 -> https://fakereum-4663.derion.io
+# Front door: https://fakereum-4663.derion.io
 # ---------------------------------------------------------------------------
 [env.4663]
 name = "fakereum-4663-rpc"
+routes = [{ pattern = "fakereum-4663.derion.io", custom_domain = true }]
+workers_dev = true
 
 [[env.4663.durable_objects.bindings]]
 name = "EVM_SANDBOX"

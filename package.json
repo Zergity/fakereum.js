@@ -9,7 +9,6 @@
     "dev": "wrangler dev",
     "deploy": "sh -c 'exec npx wrangler deploy --env \"${1:?usage: npm run deploy -- <chainid>}\"' --",
     "deploy:secrets": "sh -c 'exec npx wrangler deploy --env \"${1:?usage: npm run deploy:secrets -- <chainid>}\" --secrets-file \".prod.vars.$1\"' --",
-    "deploy:pages": "sh -c 'exec npx wrangler pages deploy --cwd \"pages/${1:?usage: npm run deploy:pages -- <chainid>}\" --branch main --commit-dirty=true' --",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
