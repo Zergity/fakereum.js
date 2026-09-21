@@ -13,15 +13,17 @@
 # worker from this top-level config; the top level exists only so `wrangler
 # dev` and `npm run build` work without picking an environment.
 #
-# Each environment carries its own public hostname as a Workers Custom Domain
-# (`routes` below), so Cloudflare registers the hostname against the script and
-# provisions its DNS record and certificate during the deploy — no second
-# resource, no dashboard step. Two traps, both per-environment because `routes`
-# and `workers_dev` are NON-inheritable keys: declaring `routes` disables the
-# workers.dev host unless `workers_dev = true` restores it, and a hostname can
-# be claimed by only one Cloudflare product at a time. The workers.dev host is
-# worth keeping — a custom domain on the zone replaces a Worker's 5xx body with
-# Cloudflare's own error page, hiding whatever diagnostic the Worker wrote.
+# No hostname appears in this file. Each Worker's public name is a Workers
+# Custom Domain passed by scripts/deploy.sh as fakereum-<chainid>.$DEPLOY_DOMAIN,
+# read from the gitignored .deploy.env — which zone a fork answers on says
+# nothing about the chain it forks, so it belongs with ADMINS and GENESIS
+# outside git rather than here. Cloudflare provisions that hostname's DNS
+# record and certificate during the deploy; a fork with no .deploy.env gets the
+# workers.dev host and nothing else to configure. `workers_dev` is kept
+# explicit per environment (it is NON-inheritable) because attaching a custom
+# domain otherwise switches the workers.dev host off, and it is worth keeping:
+# a custom domain on the zone replaces a Worker's 5xx body with Cloudflare's
+# own error page, hiding whatever diagnostic the Worker wrote.
 name = "fakereum-rpc"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
@@ -133,11 +135,9 @@ new_sqlite_classes = ["EvmSandbox"]
 
 # ---------------------------------------------------------------------------
 # Arbitrum One (upstream chain id 42161).
-# Front door: https://fakereum-42161.derion.io
 # ---------------------------------------------------------------------------
 [env.42161]
 name = "fakereum-42161-rpc"
-routes = [{ pattern = "fakereum-42161.derion.io", custom_domain = true }]
 workers_dev = true
 
 [[env.42161.durable_objects.bindings]]
@@ -167,11 +167,9 @@ RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
 
 # ---------------------------------------------------------------------------
 # Robinhood Chain (upstream chain id 4663, Arbitrum Orbit L2).
-# Front door: https://fakereum-4663.derion.io
 # ---------------------------------------------------------------------------
 [env.4663]
 name = "fakereum-4663-rpc"
-routes = [{ pattern = "fakereum-4663.derion.io", custom_domain = true }]
 workers_dev = true
 
 [[env.4663.durable_objects.bindings]]
@@ -221,11 +219,9 @@ RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
 
 # ---------------------------------------------------------------------------
 # Hemi (upstream chain id 43111, OP-Stack L2 anchored to Bitcoin).
-# Front door: https://fakereum-43111.derion.io
 # ---------------------------------------------------------------------------
 [env.43111]
 name = "fakereum-43111-rpc"
-routes = [{ pattern = "fakereum-43111.derion.io", custom_domain = true }]
 workers_dev = true
 
 [[env.43111.durable_objects.bindings]]

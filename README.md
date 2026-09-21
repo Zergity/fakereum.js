@@ -363,9 +363,12 @@ npm run dev                        # wrangler dev, config from .dev.vars
 
 Each upstream chain is its own deployment, kept side by side:
 
-- `wrangler.toml` `[env.<chainid>]` — the Worker name, its public hostname
-  (`routes` + `workers_dev`) and its `[vars]`
+- `wrangler.toml` `[env.<chainid>]` — the Worker name and the chain's `[vars]`:
+  upstream endpoints, chain id, symbol. Nothing here is specific to who is
+  running it
 - `.prod.vars.<chainid>` (gitignored) — its secrets; see `.prod.vars.example`
+- `.deploy.env` (gitignored) — one line, `DEPLOY_DOMAIN=…`, shared by every
+  chain; see `.deploy.env.example`
 
 ```sh
 npm run deploy:secrets -- 42161    # first deploy of a chain: code + secrets
@@ -373,13 +376,19 @@ npm run deploy -- 42161            # later deploys (secrets are preserved)
 npm run build                      # wrangler deploy --dry-run: measure the bundle
 ```
 
-That single deploy also creates the custom domain and its DNS record, so a new
-chain needs no dashboard step. Two keys in the environment block are easy to
-miss: `routes` and `workers_dev` are both non-inheritable, and declaring
-`routes` disables the `workers.dev` host unless `workers_dev = true` says
-otherwise. A bare `wrangler deploy` without `--env` would create a stray
-top-level worker; the top-level config exists only so `wrangler dev` and
-`npm run build` work without picking an environment.
+Each Worker answers on `fakereum-<chainid>.$DEPLOY_DOMAIN` as a Workers Custom
+Domain, which the deploy attaches and Cloudflare provisions a DNS record and
+certificate for — no dashboard step, and re-deploying an already-attached
+hostname is a no-op. The zone has to be on the same Cloudflare account. Without
+a `.deploy.env` the Worker deploys with its `workers.dev` host alone and
+nothing else changes, which is the sane default for a fork that owns no zone.
+That host stays enabled even when a custom domain is attached, because a custom
+domain on a zone replaces a Worker's 5xx body with Cloudflare's own error page
+and takes the diagnostic with it.
+
+A bare `wrangler deploy` without `--env` would create a stray top-level worker;
+the top-level config exists only so `wrangler dev` and `npm run build` work
+without picking an environment.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`.
 
@@ -1159,6 +1168,7 @@ src/import_balance.ts     cross-chain balance import
 src/impersonate/          B↔A map, request/response NAT, admin RPCs
 src/ui/                   landing, explorer, lists, import, admin pages
 src/lib/                  hex, chains, blocktag, eip191, eip712, cors, rate limit, ipnet
+scripts/deploy.sh         one chain's deploy: env block + secrets + hostname
 sdk/                      fakereum-sdk, the client package
 test/, sdk/test/          vitest suites + two live smoke scripts
 ```

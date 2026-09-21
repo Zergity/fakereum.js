@@ -7,5 +7,6 @@ dist/
 .prod.vars
 .prod.vars.*
 !.prod.vars.example
+.deploy.env
 *.log
 .DS_Store

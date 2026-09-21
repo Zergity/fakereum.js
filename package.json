@@ -7,8 +7,8 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "sh -c 'exec npx wrangler deploy --env \"${1:?usage: npm run deploy -- <chainid>}\"' --",
-    "deploy:secrets": "sh -c 'exec npx wrangler deploy --env \"${1:?usage: npm run deploy:secrets -- <chainid>}\" --secrets-file \".prod.vars.$1\"' --",
+    "deploy": "sh scripts/deploy.sh",
+    "deploy:secrets": "sh scripts/deploy.sh --secrets",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
