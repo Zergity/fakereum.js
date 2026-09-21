@@ -18,7 +18,7 @@ const account = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae
 const ME = account.address.toLowerCase() as Hex
 const OTHER = privateKeyToAccount('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a')
 const ETH = 10n ** 18n
-// An Arbitrum fork: Arbitrum is the upstream, so the other three chains are sources.
+// An Arbitrum fork: Arbitrum is the upstream, so every other chain is a source.
 const cfg = { networkName: 'Fake Arbitrum One', upstreamChainId: 42161n, balanceMultiplier: 1000n } as unknown as Config
 const CHAIN = 'Arbitrum One' // the header names the forked chain, not the "Fake …" network name
 const MAINNET = importChain(1n)!
@@ -50,10 +50,10 @@ describe('importMessage / importSources', () => {
     )
   })
 
-  it('covers mainnet, Arbitrum, Base and Robinhood, minus the sandbox upstream', () => {
-    expect(IMPORT_CHAINS.map((c) => c.chainId)).toEqual([1n, 42161n, 8453n, 4663n])
-    expect(importSources(cfg).map((c) => c.chainId)).toEqual([1n, 8453n, 4663n])
-    expect(importSources({ ...cfg, upstreamChainId: 4663n } as Config).map((c) => c.chainId)).toEqual([1n, 42161n, 8453n])
+  it('covers mainnet, Arbitrum, Base, Robinhood and Hemi, minus the sandbox upstream', () => {
+    expect(IMPORT_CHAINS.map((c) => c.chainId)).toEqual([1n, 42161n, 8453n, 4663n, 43111n])
+    expect(importSources(cfg).map((c) => c.chainId)).toEqual([1n, 8453n, 4663n, 43111n])
+    expect(importSources({ ...cfg, upstreamChainId: 4663n } as Config).map((c) => c.chainId)).toEqual([1n, 42161n, 8453n, 43111n])
   })
 })
 
@@ -69,6 +69,7 @@ describe('rpcImportSources', () => {
         { chainId: '0x1', name: 'Ethereum Mainnet', symbol: 'ETH', balance: toQuantity(2n * ETH), credit: toQuantity(2000n * ETH) },
         { chainId: '0x2105', name: 'Base', symbol: 'ETH', balance: '0x0', credit: '0x0' },
         { chainId: '0x1237', name: 'Robinhood Chain', symbol: 'ETH', error: 'Robinhood Chain down' },
+        { chainId: '0xa867', name: 'Hemi', symbol: 'ETH', error: 'Hemi down' },
       ],
     })
   })

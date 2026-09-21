@@ -218,3 +218,48 @@ REJECT_UPSTREAM_SIGNERS = "true"
 IMPERSONATE = ""
 RATE_LIMIT_RPS = "200"
 RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
+
+# ---------------------------------------------------------------------------
+# Hemi (upstream chain id 43111, OP-Stack L2 anchored to Bitcoin).
+# Front door: https://fakereum-43111.derion.io
+# ---------------------------------------------------------------------------
+[env.43111]
+name = "fakereum-43111-rpc"
+routes = [{ pattern = "fakereum-43111.derion.io", custom_domain = true }]
+workers_dev = true
+
+[[env.43111.durable_objects.bindings]]
+name = "EVM_SANDBOX"
+class_name = "EvmSandbox"
+
+# Endpoint notes:
+# All three accept the 3-param eth_call-with-stateOverrides shape AND the 4th
+# positional blockOverrides.time (the head clock), verified 2026-09-21. They
+# differ on eth_getLogs, which decides the order: the official endpoint serves
+# multi-thousand-block ranges, thirdweb caps a query at 1000 blocks (-32005
+# "Log response size exceeded" -> treated as a limit, failed over), and drpc's
+# free tier refuses anything past ~1000 blocks with HTTP 400 + code 35 ("ranges
+# over 10000 blocks are not supported on free plan") — a non-retryable status,
+# so it costs one subrequest and falls through to the next URL. drpc therefore
+# sits last: it is a healthy eth_call failover, not a log source.
+# Dropped: rpc.ankr.com/hemi (403, key required), hemi.blockpi.network public
+# (402), hemi.api.onfinality.io / hemi.meowrpc.com / rpc.therpc.io (no DNS),
+# endpoints.omniatech.io (521), hemi-rpc.publicnode.com (404 — no Hemi there).
+# Explorer: Etherscan v2 does not cover 43111. The chain's own Blockscout
+# instance does, keyless and challenge-free (it answers a bare programmatic
+# caller and sends CORS headers), so no ETHERSCAN_API_KEY is configured and
+# none is injected into proxied traffic. Its hostname carries no "blockscout",
+# so the style has to be stated instead of sniffed.
+[env.43111.vars]
+UPSTREAM_RPC = "https://rpc.hemi.network/rpc,https://43111.rpc.thirdweb.com,https://hemi.drpc.org"
+UPSTREAM_ETHERSCAN = "https://explorer.hemi.xyz/api"
+UPSTREAM_ETHERSCAN_STYLE = "blockscout"
+CHAIN_ID = "43111"
+SYMBOL = "FETH"
+NETWORK_NAME = "Fake Hemi"
+ETH_CALL_STORAGE_MODE = "stateOverride"
+CACHE_TTL = "12"
+REJECT_UPSTREAM_SIGNERS = "true"
+IMPERSONATE = ""
+RATE_LIMIT_RPS = "200"
+RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"

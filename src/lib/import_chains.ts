@@ -37,6 +37,12 @@ export const IMPORT_CHAINS: readonly ImportChain[] = [
     symbol: 'ETH',
     rpcs: ['https://rpc.mainnet.chain.robinhood.com', 'https://robinhood-rpc.publicnode.com'],
   },
+  {
+    chainId: 43111n,
+    name: 'Hemi',
+    symbol: 'ETH',
+    rpcs: ['https://rpc.hemi.network/rpc', 'https://43111.rpc.thirdweb.com'],
+  },
 ]
 
 export function importChain(chainId: bigint): ImportChain | undefined {

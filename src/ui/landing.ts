@@ -10,6 +10,7 @@
 import type { Config } from '../types'
 import { esc } from './html'
 import { INFOS_SENTINEL } from '../infos'
+import { importSources } from '../import_balance'
 
 export interface RenderLandingOpts {
   cfg: Config
@@ -185,7 +186,7 @@ ${replayGuardSection}
 }</code></pre>
 
   <div class="tag" style="margin-top:2rem">balances</div>
-  <p style="color:#7d8590">Every account starts out holding <strong>${esc(cfg.balanceMultiplier.toString())}×</strong> its native balance on ${esc(upstreamName)}, automatically — <code>eth_getBalance</code> and transactions here see that figure until the account's first sandbox transaction lands, after which the sandbox tracks the balance itself. Funds on another chain (Ethereum, Arbitrum, Base, Robinhood Chain) can be <a href="/import">imported once per account</a> at the same multiplier, authorized by a <code>personal_sign</code> message.</p>
+  <p style="color:#7d8590">Every account starts out holding <strong>${esc(cfg.balanceMultiplier.toString())}×</strong> its native balance on ${esc(upstreamName)}, automatically — <code>eth_getBalance</code> and transactions here see that figure until the account's first sandbox transaction lands, after which the sandbox tracks the balance itself. Funds on another chain (${esc(importSources(cfg).map((c) => c.name).join(', '))}) can be <a href="/import">imported once per account</a> at the same multiplier, authorized by a <code>personal_sign</code> message.</p>
 
   <div class="tag" id="signed" style="margin-top:2rem">send with a signed message</div>
   <p style="color:#7d8590">Besides <code>eth_sendRawTransaction</code>, a transaction can be submitted as a plain <code>personal_sign</code> (EIP-191) message. The signature is chain-agnostic, so the wallet can sit on any network — no sandbox chain added, no switch. The message binds nonce, recipient, value and calldata; gas limit and fee terms are passed unsigned alongside (defaulted wallet-style when omitted). The sandbox then runs a normal transaction from the signer. Ask for the text (pass <code>from</code> and the sandbox reads the nonce for you), have the wallet sign it, post fields + signature straight to <code>/rpc</code>:</p>
