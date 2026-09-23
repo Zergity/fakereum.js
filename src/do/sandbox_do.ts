@@ -114,6 +114,14 @@ export class EvmSandbox {
   /** addrKey -> cross-chain import record (one per account, forever). */
   private imports = new Map<string, ImportRecord>()
   private executor: Executor | null = null
+  /**
+   * Every sandbox write — tx execute+commit, undo, clear, set-code, import —
+   * runs through this chain, one at a time. A Durable Object delivers the next
+   * request whenever the current one awaits real I/O, and the executor awaits
+   * upstream fetches mid-execution; two txs interleaved that way could both
+   * read a slot before either committed and one write would be lost.
+   */
+  private writes: Promise<unknown> = Promise.resolve()
   private limiter: RateLimiter | null
   private etherscanKeyIdx = 0
   private resolved = false
@@ -416,11 +424,12 @@ export class EvmSandbox {
       case 'fakereum_sendTransaction':
         return rpcSendMessageTx(req, this.cfg, {
           ...this.messageTxDeps(req),
-          apply: async (m) => {
-            const res = await this.executor!.applyMessageTx(m)
-            await this.commitTx(res)
-            return res.tx.hash
-          },
+          apply: (m) =>
+            this.serialized(async () => {
+              const res = await this.executor!.applyMessageTx(m)
+              await this.commitTx(res)
+              return res.tx.hash
+            }),
         })
       case 'eth_call': {
         const infos = rpcInfosCall(req, this.cfg, baseURL)
@@ -470,6 +479,13 @@ export class EvmSandbox {
     }
   }
 
+  /** Run a sandbox mutation after every earlier one has finished. */
+  private serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writes.then(fn, fn)
+    this.writes = run.catch(() => undefined)
+    return run
+  }
+
   private async persistImpersonators(): Promise<void> {
     await this.ctx.storage.put('impersonators', this.impersonators.serialize())
   }
@@ -485,9 +501,12 @@ export class EvmSandbox {
     const raw = params[0]
     if (typeof raw !== 'string') return makeError(req.id, ERR_INVALID_PARAMS, 'invalid params')
     try {
-      const res = await this.executor!.applyTx(hexToBytes(raw))
-      await this.commitTx(res)
-      return makeResult(req.id, res.tx.hash)
+      const hash = await this.serialized(async () => {
+        const res = await this.executor!.applyTx(hexToBytes(raw))
+        await this.commitTx(res)
+        return res.tx.hash
+      })
+      return makeResult(req.id, hash)
     } catch (e) {
       return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
     }
@@ -528,18 +547,19 @@ export class EvmSandbox {
   private importDeps(): ImportDeps {
     return {
       imported: (addr) => this.imports.get(addrKey(addr)),
-      credit: async (addr, credit, record) => {
-        const key = addrKey(addr)
-        const ovl = this.overlay.get(key)
-        const current = ovl?.balanceSet ? ovl.balance : await this.fetcher.getBalance(addr)
-        const next = current + credit
-        const delta = this.overlay.setBalance(addr, next)
-        await this.persistOverlay(delta)
-        this.imports.set(key, record)
-        await this.ctx.storage.put('import:' + key, record)
-        if (rejectUpstreamSignersEnabled(this.cfg)) await this.kinds.pin(addr)
-        return next
-      },
+      credit: (addr, credit, record) =>
+        this.serialized(async () => {
+          const key = addrKey(addr)
+          const ovl = this.overlay.get(key)
+          const current = ovl?.balanceSet ? ovl.balance : await this.fetcher.getBalance(addr)
+          const next = current + credit
+          const delta = this.overlay.setBalance(addr, next)
+          await this.persistOverlay(delta)
+          this.imports.set(key, record)
+          await this.ctx.storage.put('import:' + key, record)
+          if (rejectUpstreamSignersEnabled(this.cfg)) await this.kinds.pin(addr)
+          return next
+        }),
     }
   }
 
@@ -711,7 +731,13 @@ export class EvmSandbox {
     params: unknown[],
     method: string,
   ): Promise<RpcResponse> {
-    const merged = this.overlay.asStateOverrides() as Record<string, Record<string, unknown>>
+    // The whole overlay while it is small; past FILTER_OVERRIDES_MIN_BYTES the
+    // executor runs the call speculatively and keeps only the overlay entries
+    // it read (see Executor.overridesForCall). Copied: the entries are cached.
+    const merged = { ...(await this.executor!.overridesForCall(parseCallArgs(params[0]), parseStateOverrides(params[2]))) } as Record<
+      string,
+      Record<string, unknown>
+    >
     // The upstream node sees real balances; the sandbox shows upstream ×
     // multiplier for an account without a sandbox balance. Make the caller's
     // `from` see its sandbox balance so value/gas checks match what a tx here
@@ -788,57 +814,63 @@ export class EvmSandbox {
     return makeResult(id, popped)
   }
 
-  private async undoEntry(tx: StoredTx): Promise<void> {
-    for (const ad of Object.values(tx.diff.accounts)) {
-      if (ad.selfDestructed) {
-        throw new Error(
-          `tx ${tx.hash}: refusing to undo selfdestruct: pre-tx storage cannot be fully restored`,
-        )
+  private undoEntry(tx: StoredTx): Promise<void> {
+    return this.serialized(async () => {
+      for (const ad of Object.values(tx.diff.accounts)) {
+        if (ad.selfDestructed) {
+          throw new Error(
+            `tx ${tx.hash}: refusing to undo selfdestruct: pre-tx storage cannot be fully restored`,
+          )
+        }
       }
-    }
-    const delta = this.overlay.applyReverseDiff(tx.diff)
-    this.sandbox.removeTx(tx.hash)
-    await this.persistOverlay(delta)
-    await this.deleteSandboxTxs([tx.hash])
+      const delta = this.overlay.applyReverseDiff(tx.diff)
+      this.sandbox.removeTx(tx.hash)
+      await this.persistOverlay(delta)
+      await this.deleteSandboxTxs([tx.hash])
+    })
   }
 
   /** Overlay code override for `account`; persisted like any overlay write. */
-  private async doSetCode(account: Hex, code: Uint8Array): Promise<void> {
-    const delta = this.overlay.setCode(account, code)
-    await this.persistOverlay(delta)
+  private doSetCode(account: Hex, code: Uint8Array): Promise<void> {
+    return this.serialized(async () => {
+      const delta = this.overlay.setCode(account, code)
+      await this.persistOverlay(delta)
+    })
   }
 
-  private async doClear(
+  private doClear(
     include: Hex[],
     exclude: Hex[],
     keepNonzeroNonce: boolean,
     keepBalances: boolean,
   ): Promise<ClearCounts> {
-    const inc = new Set(include.map(addrKey))
-    const exc = new Set(exclude.map(addrKey))
-    // Which accounts the clear is allowed to touch — include/exclude scope only.
-    // What actually survives inside a touched account (balance, EOA nonce) is
-    // decided by the keep flags, handled in overlay.clearAccounts.
-    const inScope = (addr: Hex): boolean => {
-      const k = addrKey(addr)
-      if (exc.has(k)) return false
-      if (inc.size > 0 && !inc.has(k)) return false
-      return true
-    }
-    const delta = this.overlay.clearAccounts(inScope, {
-      keepNonce: keepNonzeroNonce,
-      keepBalances,
+    return this.serialized(async () => {
+      const inc = new Set(include.map(addrKey))
+      const exc = new Set(exclude.map(addrKey))
+      // Which accounts the clear is allowed to touch — include/exclude scope only.
+      // What actually survives inside a touched account (balance, EOA nonce) is
+      // decided by the keep flags, handled in overlay.clearAccounts.
+      const inScope = (addr: Hex): boolean => {
+        const k = addrKey(addr)
+        if (exc.has(k)) return false
+        if (inc.size > 0 && !inc.has(k)) return false
+        return true
+      }
+      const delta = this.overlay.clearAccounts(inScope, {
+        keepNonce: keepNonzeroNonce,
+        keepBalances,
+      })
+      // Recorded sandbox txs are part of "everything of those accounts", so an
+      // in-scope sender's txs go regardless of the keep flags — a retained nonce
+      // is just the count for eth_getTransactionCount, decoupled from the history.
+      const removed = this.sandbox.removeWhere((tx) => inScope(tx.from))
+      await this.persistOverlay(delta)
+      await this.deleteSandboxTxs(removed)
+      return {
+        overlayCleared: delta.deleted.size + delta.updated.size,
+        txsCleared: removed.length,
+      }
     })
-    // Recorded sandbox txs are part of "everything of those accounts", so an
-    // in-scope sender's txs go regardless of the keep flags — a retained nonce
-    // is just the count for eth_getTransactionCount, decoupled from the history.
-    const removed = this.sandbox.removeWhere((tx) => inScope(tx.from))
-    await this.persistOverlay(delta)
-    await this.deleteSandboxTxs(removed)
-    return {
-      overlayCleared: delta.deleted.size + delta.updated.size,
-      txsCleared: removed.length,
-    }
   }
 
   // --- Etherscan /api -----------------------------------------------------

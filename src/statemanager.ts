@@ -74,6 +74,31 @@ interface WAccount {
 
 type Restore = () => void
 
+/**
+ * What one execution read from pre-state: the accounts it loaded and the
+ * slots it read before writing them, both keyed the way the Overlay keys them
+ * (lowercase address; slot as `<address>:<0x-64 slot>`). Recorded by a
+ * ForkingStateManager handed one, so a speculative run can tell exactly which
+ * overlay entries a call depends on — Overlay.asStateOverridesFor turns that
+ * into the smallest stateOverrides object that still reproduces the run.
+ */
+export class TouchedState {
+  readonly accounts = new Set<string>()
+  readonly slots = new Set<string>()
+
+  account(key: string): void {
+    this.accounts.add(key)
+  }
+  slot(key: string, slot: string): void {
+    this.slots.add(key + ':' + slot)
+  }
+  /** Fold another run's reads in (e.g. an upstream access list). */
+  merge(other: TouchedState): void {
+    for (const a of other.accounts) this.accounts.add(a)
+    for (const s of other.slots) this.slots.add(s)
+  }
+}
+
 export class ForkingStateManager implements StateManagerInterface {
   // immutable pre-tx base (lazily filled, never mutated by execution)
   private base = new Map<string, BaseSnapshot>()
@@ -93,6 +118,8 @@ export class ForkingStateManager implements StateManagerInterface {
     private readonly overlay: Overlay,
     // Fetcher in real runs; MissRecorder in speculative warm-up runs.
     private readonly fetcher: StateReader,
+    /** When given, every pre-state account load and slot read is recorded here. */
+    private readonly touched?: TouchedState,
   ) {
     this.originalStorageCache = {
       get: (address: Address, key: Uint8Array) => this.committedStorage(address, key),
@@ -132,6 +159,7 @@ export class ForkingStateManager implements StateManagerInterface {
     let b = this.base.get(key)
     if (b) return b
 
+    this.touched?.account(key)
     const ovl = this.overlay.get(key)
     let nonce = 0n
     let balance = 0n
@@ -208,6 +236,7 @@ export class ForkingStateManager implements StateManagerInterface {
     await this.loadBase(k, addr)
     const bs = this.baseStorage.get(k)!
     const sk = slotKey(key)
+    this.touched?.slot(k, sk)
     const have = bs.get(sk)
     if (have !== undefined) return have
     const wa = this.w.get(k)

@@ -26,10 +26,10 @@ import {
 import { Common, Hardfork, Mainnet, createCustomCommon } from '@ethereumjs/common'
 import { recoverAddress } from 'viem'
 
-import type { Config, DeployMethod, SignedMessage, StoredLog, StoredTx, TxDiff } from './types'
+import type { Config, DeployMethod, SignedMessage, StateOverrides, StoredLog, StoredTx, TxDiff } from './types'
 import type { Overlay, WorkingChange } from './overlay'
 import { MissRecorder, type BlockCtx, type Fetcher } from './fetcher'
-import { ForkingStateManager } from './statemanager'
+import { ForkingStateManager, TouchedState } from './statemanager'
 import { headTime } from './head'
 import type { Impersonators } from './impersonate/store'
 import { rejectUpstreamSignersEnabled } from './config'
@@ -51,6 +51,19 @@ const PREFETCH_SENDER_BALANCE = '0xffffffffffffffffffffffffff'
 // at least one data-dependent hop, so real txs converge in 1-3.
 const MAX_WARM_ROUNDS = 6
 
+// Below this (approximate) size the whole overlay is shipped as stateOverrides
+// as before: filtering it costs a speculative local run, and a small body is
+// accepted by every upstream anyway. Above it, forwarded calls carry only the
+// overlay entries the call was observed to read.
+const FILTER_OVERRIDES_MIN_BYTES = 256 * 1024
+
+// Addresses below 0x100 that are not the Cancun precompiles (0x01-0x0a):
+// chain-specific precompiles (Arbitrum's ArbSys & co. at 0x64-0x6f) that the
+// local EVM runs as empty accounts, so a speculative run that reached one may
+// have taken a different path than upstream will.
+const FIRST_UNKNOWN_PRECOMPILE = 0x0bn
+const LAST_UNKNOWN_PRECOMPILE = 0xffn
+
 export interface ApplyResult {
   tx: StoredTx
   changes: WorkingChange[]
@@ -59,6 +72,18 @@ export interface ApplyResult {
    * The caller pins it once the tx lands — see account_kind.ts.
    */
   signerKind?: AccountKind
+}
+
+/**
+ * What a speculative run established about an execution's reads (see
+ * Executor.speculate). `touched` is exact for the current state only when
+ * `complete` is true; `unknownPath` flags a run that reached an address the
+ * local EVM cannot model like upstream does.
+ */
+export interface Speculation {
+  touched: TouchedState
+  complete: boolean
+  unknownPath: boolean
 }
 
 /** An EIP-191 signed-message transaction, already verified (see message_tx.ts). */
@@ -252,28 +277,33 @@ export class Executor {
   private async execute(p: ExecParams): Promise<ApplyResult> {
     const { tx, block, baseFee, fromHex, signerHex } = p
 
-    // Warm the fetcher cache for everything this tx is likely to touch, in 2-3
-    // batched subrequests, before the lazy fork starts issuing per-read
-    // fetches (3 per cold account + 1 per cold SLOAD — enough to blow the Free
-    // plan's 50-subrequest cap on a heavy tx).
-    await this.prefetchTouchedState(
-      fromHex,
-      tx.to ? (ejBytesToHex(tx.to.bytes) as Hex) : null,
-      tx.data,
-      tx.gasLimit,
-      tx.value,
-      block.coinbase,
-    )
-
     const ejBlock = this.buildBlock(block, baseFee)
     const customPrecompiles = this.impersonators.isEmpty() ? undefined : [this.ecrecoverPrecompile()]
 
-    // Backstop for whatever the access-list prefetch missed (its upstream
-    // simulation can diverge from sandbox execution, or be refused outright):
+    // Warm the fetcher cache for everything this tx touches before the lazy
+    // fork starts issuing per-read fetches (3 per cold account + 1 per cold
+    // SLOAD — enough to blow the Free plan's 50-subrequest cap on a heavy tx):
     // speculatively run the tx against the cache alone, batch-fetch every
     // recorded miss, and repeat until a run completes fully warm. Costs one
-    // batch POST per round instead of one fetch per cold read.
-    await this.warmupRounds(tx, ejBlock, customPrecompiles)
+    // batch POST per round instead of one fetch per cold read, and records
+    // which overlay entries the tx actually reads.
+    const spec = await this.warmupRounds(tx, ejBlock, customPrecompiles)
+
+    // Only when the speculation could not finish warm (reads that keep failing
+    // upstream, or a dependency chain deeper than the round cap) ask upstream
+    // for the access list as a second opinion — with the overlay narrowed to
+    // what the speculation saw, so the request body stays small.
+    if (!spec.complete) {
+      await this.prefetchTouchedState(
+        fromHex,
+        tx.to ? (ejBytesToHex(tx.to.bytes) as Hex) : null,
+        tx.data,
+        tx.gasLimit,
+        tx.value,
+        spec,
+        block.coinbase,
+      )
+    }
 
     const sm = new ForkingStateManager(this.overlay, this.fetcher)
     const vm: VM = await createVM({
@@ -389,44 +419,55 @@ export class Executor {
   }
 
   /**
-   * Speculative warm-up: run the tx on a throwaway VM whose reads come from
-   * the cache only (MissRecorder answers zero for anything cold and records
-   * it), then batch-fetch the whole recorded set in one POST and run again.
-   * A zero guess can steer a round down a wrong branch; the next round holds
-   * the true values and goes deeper, so the recorded set grows monotonically
-   * until a round finishes with no misses (typical: 1-3 rounds; the round
-   * that confirms convergence costs zero subrequests). Stops early when a
-   * round finds nothing new (e.g. reads that keep failing upstream) and caps
-   * at MAX_WARM_ROUNDS; anything still cold falls back to the lazy per-read
-   * path in the real run, which remains the source of correctness.
+   * Speculative warm-up for a tx: see speculate(). Runs with the sender's
+   * nonce and balance checks off, since those may still be zero-guesses; the
+   * real run re-validates against true values.
    */
-  private async warmupRounds(
+  private warmupRounds(
     tx: Parameters<typeof runTx>[1]['tx'],
     ejBlock: Parameters<typeof runTx>[1]['block'],
     customPrecompiles: CustomPrecompile[] | undefined,
-  ): Promise<void> {
-    const fetched = new Set<string>()
-    for (let round = 0; round < MAX_WARM_ROUNDS; round++) {
-      const rec = new MissRecorder(this.fetcher)
-      const sm = new ForkingStateManager(this.overlay, rec)
+  ): Promise<Speculation> {
+    return this.speculate(async (sm) => {
       const vm: VM = await createVM({
         common: this.common,
         stateManager: sm,
         ...(customPrecompiles ? { evmOpts: { customPrecompiles } } : {}),
       })
+      await runTx(vm, { tx, block: ejBlock, skipNonce: true, skipBalance: true, skipHardForkValidation: true })
+    })
+  }
+
+  /**
+   * Speculative execution: run `exec` on a state manager whose reads come from
+   * the overlay and the cache only (MissRecorder answers zero for anything
+   * cold and records it), batch-fetch the whole recorded set in one POST and
+   * run again. A zero guess can steer a round down a wrong branch; the next
+   * round holds the true values and goes deeper, so the recorded set grows
+   * monotonically until a round finishes with no misses at all (typical: 1-3
+   * rounds; that last round costs zero subrequests). Stops early when a round
+   * finds nothing new (reads that keep failing upstream) and caps at
+   * MAX_WARM_ROUNDS; anything still cold falls back to the lazy per-read path
+   * in the real run, which remains the source of correctness.
+   *
+   * The last round's reads are returned: when it was fully warm, they are
+   * exactly the pre-state the execution depends on, which is what lets a
+   * forwarded call carry only the overlay entries it needs.
+   */
+  private async speculate(exec: (sm: ForkingStateManager) => Promise<unknown>): Promise<Speculation> {
+    const fetched = new Set<string>()
+    let last: Speculation = { touched: new TouchedState(), complete: false, unknownPath: false }
+    for (let round = 0; round < MAX_WARM_ROUNDS; round++) {
+      const rec = new MissRecorder(this.fetcher)
+      const touched = new TouchedState()
+      const sm = new ForkingStateManager(this.overlay, rec, touched)
       try {
-        await runTx(vm, {
-          tx,
-          block: ejBlock,
-          // Sender balance/nonce may still be zero-guesses; let the run reach
-          // the EVM anyway — the real run re-validates against true values.
-          skipNonce: true,
-          skipBalance: true,
-          skipHardForkValidation: true,
-        })
+        await exec(sm)
       } catch {
         // a speculative run may die on wrong guesses; its misses still count
       }
+      last = { touched, complete: rec.missCount === 0, unknownPath: reachesUnknownPrecompile(touched) }
+      if (last.complete) return last
       let progress = false
       for (const k of rec.keys) {
         if (!fetched.has(k)) {
@@ -434,12 +475,49 @@ export class Executor {
           progress = true
         }
       }
-      if (!progress) return // converged, or the remaining misses won't fetch
+      if (!progress) return last // the remaining misses won't fetch
       try {
         await this.fetcher.prefetchState([...rec.accounts], rec.slots)
       } catch {
-        return // upstream unwell — the real run surfaces the actual error
+        return last // upstream unwell — the real run surfaces the actual error
       }
+    }
+    return last
+  }
+
+  /**
+   * The stateOverrides a forwarded call (or a tx's access-list request) should
+   * carry. A small overlay goes whole, as it always did. A large one is
+   * narrowed to what `spec` observed the execution reading — but only when
+   * that observation is trustworthy: complete, and free of chain-specific
+   * precompiles the local EVM cannot follow. `extra` accounts (sender,
+   * recipient) always get their account fields.
+   */
+  private overridesFrom(spec: Speculation | null, extra: Hex[], opts: { bestEffort?: boolean } = {}): StateOverrides {
+    if (this.overlay.approxOverrideBytes() <= FILTER_OVERRIDES_MIN_BYTES) return this.overlay.asStateOverrides()
+    if (!spec || spec.unknownPath) return this.overlay.asStateOverrides()
+    if (!spec.complete && !opts.bestEffort) return this.overlay.asStateOverrides()
+    return this.overlay.asStateOverridesFor(spec.touched, extra)
+  }
+
+  /**
+   * The stateOverrides for forwarding an eth_call / eth_estimateGas upstream.
+   * Runs the call speculatively against overlay + cache first when the overlay
+   * has grown past FILTER_OVERRIDES_MIN_BYTES; otherwise the whole overlay,
+   * with no local execution at all.
+   */
+  async overridesForCall(args: CallArgs, overrides: Map<string, AccountOverride> | null): Promise<StateOverrides> {
+    if (this.overlay.approxOverrideBytes() <= FILTER_OVERRIDES_MIN_BYTES) return this.overlay.asStateOverrides()
+    const extra: Hex[] = []
+    if (args.from) extra.push(args.from)
+    if (args.to) extra.push(args.to)
+    try {
+      const block = await this.fetcher.getLatestBlock()
+      const ejBlock = this.buildBlock({ ...block, time: headTime(block.time) }, block.baseFee)
+      const spec = await this.speculate((sm) => this.runCallOn(sm, args, overrides, block, ejBlock))
+      return this.overridesFrom(spec, extra)
+    } catch {
+      return this.overlay.asStateOverrides()
     }
   }
 
@@ -459,6 +537,7 @@ export class Executor {
     data: Uint8Array,
     gasLimit: bigint,
     value: bigint,
+    spec: Speculation | null,
     coinbase?: Hex,
   ): Promise<void> {
     try {
@@ -469,7 +548,11 @@ export class Executor {
       }
       if (to) call['to'] = to
       if (gasLimit > 0n) call['gas'] = toQuantity(gasLimit)
-      const overrides = this.overlay.asStateOverrides() as Record<string, Record<string, unknown>>
+      // Narrowed to what the speculation saw whenever the overlay is large: the
+      // list is best-effort, so an incomplete observation is still a better
+      // body than several megabytes the node may refuse outright.
+      const extra: Hex[] = to ? [from, to] : [from]
+      const overrides = { ...this.overridesFrom(spec, extra, { bestEffort: true }) } as Record<string, Record<string, unknown>>
       const senderKey =
         Object.keys(overrides).find((k) => k.toLowerCase() === from.toLowerCase()) ??
         checksumAddress(from)
@@ -499,27 +582,6 @@ export class Executor {
 
   async call(args: CallArgs, overrides: Map<string, AccountOverride> | null): Promise<CallResult> {
     const block = await this.fetcher.getLatestBlock()
-    // Same batched warm-up as applyTx — in getStorageAt mode every local
-    // eth_call otherwise pays 3 singles per cold account + 1 per cold SLOAD.
-    await this.prefetchTouchedState(
-      args.from ?? (ZERO_ADDR as Hex),
-      args.to ?? null,
-      args.data ? hexToBytes(args.data) : new Uint8Array(0),
-      args.gas ?? 0n,
-      args.value ?? 0n,
-    )
-    const sm = new ForkingStateManager(this.overlay, this.fetcher)
-    if (overrides) {
-      for (const [k, o] of overrides) {
-        await sm.applyOverride(createAddressFromString(k.toLowerCase()), o)
-      }
-    }
-    const evm = await createEVM({ common: this.common, stateManager: sm })
-
-    const data = args.data ? hexToBytes(args.data) : new Uint8Array(0)
-    const isCreate = !args.to
-    const gasLimit = args.gas && args.gas > 0n ? args.gas : block.gasLimit
-
     // Give the call a block context so TIMESTAMP/NUMBER read sensibly instead of
     // the EVM's default zero-block. block.timestamp is the head clock (head.ts):
     // the upstream latest-block time can be stale (cached up to cacheTtlMs, a
@@ -527,26 +589,49 @@ export class Executor {
     // "now". Everything else mirrors the latest block.
     const ejBlock = this.buildBlock({ ...block, time: headTime(block.time) }, block.baseFee)
 
-    const res = await evm.runCall({
-      caller: args.from ? createAddressFromString(args.from.toLowerCase()) : createAddressFromString(ZERO_ADDR),
-      to: args.to ? createAddressFromString(args.to.toLowerCase()) : undefined,
-      data,
-      gasLimit,
-      value: args.value ?? 0n,
-      gasPrice: 0n,
-      skipBalance: true,
-      block: ejBlock,
-    })
+    // Same batched warm-up as a tx — in getStorageAt mode every local eth_call
+    // otherwise pays 3 singles per cold account + 1 per cold SLOAD.
+    await this.speculate((sm) => this.runCallOn(sm, args, overrides, block, ejBlock))
 
+    const sm = new ForkingStateManager(this.overlay, this.fetcher)
+    const res = await this.runCallOn(sm, args, overrides, block, ejBlock)
+
+    const data = args.data ? hexToBytes(args.data) : new Uint8Array(0)
     const out: CallResult = {
       returnData: bytesToHex(res.execResult.returnValue ?? new Uint8Array(0)),
       executionGasUsed: res.execResult.executionGasUsed,
-      intrinsicGas: intrinsicGas(data, isCreate),
+      intrinsicGas: intrinsicGas(data, !args.to),
     }
     if (res.execResult.exceptionError) {
       out.error = String(res.execResult.exceptionError.error ?? res.execResult.exceptionError)
     }
     return out
+  }
+
+  /** One read-only run of `args` on `sm`, caller-supplied overrides applied first. */
+  private async runCallOn(
+    sm: ForkingStateManager,
+    args: CallArgs,
+    overrides: Map<string, AccountOverride> | null,
+    block: BlockCtx,
+    ejBlock: ReturnType<Executor['buildBlock']>,
+  ) {
+    if (overrides) {
+      for (const [k, o] of overrides) {
+        await sm.applyOverride(createAddressFromString(k.toLowerCase()), o)
+      }
+    }
+    const evm = await createEVM({ common: this.common, stateManager: sm })
+    return evm.runCall({
+      caller: args.from ? createAddressFromString(args.from.toLowerCase()) : createAddressFromString(ZERO_ADDR),
+      to: args.to ? createAddressFromString(args.to.toLowerCase()) : undefined,
+      data: args.data ? hexToBytes(args.data) : new Uint8Array(0),
+      gasLimit: args.gas && args.gas > 0n ? args.gas : block.gasLimit,
+      value: args.value ?? 0n,
+      gasPrice: 0n,
+      skipBalance: true,
+      block: ejBlock,
+    })
   }
 
   // --- helpers ------------------------------------------------------------
@@ -751,4 +836,13 @@ function concat3(a: Uint8Array, b: Uint8Array, c: Uint8Array): Uint8Array {
   out.set(b, a.length)
   out.set(c, a.length + b.length)
   return out
+}
+
+/** Did the run load an address in the chain-specific precompile range? */
+function reachesUnknownPrecompile(touched: TouchedState): boolean {
+  for (const key of touched.accounts) {
+    const n = BigInt(key)
+    if (n >= FIRST_UNKNOWN_PRECOMPILE && n <= LAST_UNKNOWN_PRECOMPILE) return true
+  }
+  return false
 }

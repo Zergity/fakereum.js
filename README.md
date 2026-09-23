@@ -237,8 +237,11 @@ runs the EVM. Time spent `await`ing upstream `fetch()` is I/O, not CPU, so lazy
 state reads don't burn the budget.
 
 The DO is single-threaded, which also makes it the natural place for things
-that need exactness: the per-IP rate limiter sees every request, and state
-mutations need no locking.
+that need exactness: the per-IP rate limiter sees every request. It does,
+however, deliver the next request whenever the current one awaits real I/O,
+and the executor awaits upstream fetches mid-execution — so every sandbox
+write (tx execute+commit, undo, clear, set-code, import) goes through one
+queue and runs to completion before the next starts. Reads are not queued.
 
 ### The EVM stack
 
@@ -250,16 +253,20 @@ lazy fork possible in a runtime with no synchronous I/O.
 
 Each executed transaction:
 
-1. **Prefetch.** The call is simulated upstream via `eth_createAccessList`
-   (with the overlay attached as state overrides and the sender's balance
-   forced high), and every listed account and slot is batch-fetched into the
-   cache. One subrequest for the list, one per 100 reads.
-2. **Speculative warm-up.** The tx is then run on a throwaway VM whose reads
-   come from the cache only — anything cold answers zero and is recorded. The
-   whole recorded set is batch-fetched and the round repeats until a run
-   completes fully warm (typically 1–3 rounds, capped at 6). A zero guess can
-   steer a round down a wrong branch, but the next round holds the true value
-   and goes deeper, so the set grows monotonically.
+1. **Speculative warm-up.** The tx is run on a throwaway VM whose reads come
+   from the overlay and the cache only — anything cold answers zero and is
+   recorded. The whole recorded set is batch-fetched (one subrequest per 100
+   reads) and the round repeats until a run completes fully warm (typically
+   1–3 rounds, capped at 6). A zero guess can steer a round down a wrong
+   branch, but the next round holds the true value and goes deeper, so the set
+   grows monotonically. The run also records every overlay account and slot
+   it read, which is what lets the requests below carry only those.
+2. **Access list, if needed.** Only when the speculation could not finish warm
+   (reads that keep failing upstream, or a dependency chain deeper than the
+   round cap) is the call simulated upstream via `eth_createAccessList`, with
+   the sender's balance forced high and the overlay attached as state
+   overrides — narrowed to what the speculation read once the overlay is
+   large — and every listed account and slot is batch-fetched.
 3. **Execution.** The real run happens against the layered state. Whatever the
    warm-up missed still falls through to a lazy per-read fetch, which remains
    the source of correctness.
@@ -549,6 +556,18 @@ strategies:
   Upstream's EVM does the SLOADs internally: **one subrequest per call**,
   whatever the call touches. This is the only Free-plan-safe choice, and it is
   faster for read-heavy dapps regardless.
+
+  While the overlay is small (under ~256 KB as JSON) it is attached whole.
+  Past that, shipping everything stops scaling: upstream nodes refuse large
+  bodies (publicnode at ~1 MB, most others between 3 and 8 MB), and one 24 KB
+  contract adds ~47 KB to every call. So a large overlay is first run against
+  locally — the same speculative warm-up a tx gets, against overlay plus
+  cache — and only the accounts and slots that run read are attached: a
+  token with thousands of sandbox holders contributes one slot to a
+  `balanceOf`. A run that could not finish warm, or that reached a
+  chain-specific precompile the local EVM cannot follow (Arbitrum's `0x64`
+  family), falls back to the whole overlay. The speculative run costs a batch
+  subrequest per round of cold reads and nothing once the cache is warm.
 - **`getStorageAt`** — the EVM runs locally and each cold SLOAD costs an upstream
   fetch. Useful against an upstream that doesn't honor state overrides; it can
   exceed the Free plan's 50-subrequest cap on a heavy call.

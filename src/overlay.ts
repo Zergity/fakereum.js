@@ -52,6 +52,14 @@ export interface WorkingChange {
   storage: Map<string, Hex>
 }
 
+/** The reads one execution made, as ForkingStateManager's TouchedState records them. */
+export interface TouchedReads {
+  /** addrKeys of every account loaded */
+  accounts: Iterable<string>
+  /** `<addrKey>:<0x-64 slot>` of every slot read */
+  slots: Iterable<string>
+}
+
 /** Set of addrKeys touched by a mutation, split by whether the entry survives. */
 export interface OverlayDelta {
   updated: Set<string>
@@ -96,6 +104,7 @@ export class Overlay {
       }
     }
     this.accounts.set(key, a)
+    this.invalidate([key])
   }
 
   /** JSON view of an account for persistence; null if no record. */
@@ -149,10 +158,44 @@ export class Overlay {
    * keys are EIP-55 checksummed; storage goes under `stateDiff` (patch, not
    * full replace) so untouched slots still fall through to upstream. Mirrors
    * state.go AsStateOverrides. Only accounts with a set field are emitted.
+   *
+   * Per-account entries are cached until the account changes: the object is
+   * rebuilt for every forwarded call and every tx's access-list request, and
+   * re-hexing every contract's code each time is what made a call's CPU cost
+   * grow with the sandbox. Callers must not mutate the returned entries.
    */
   asStateOverrides(): StateOverrides {
     const out: StateOverrides = {}
-    for (const [key, a] of this.accounts) {
+    for (const key of this.accounts.keys()) {
+      const entry = this.overrideEntry(key)
+      if (entry) out[checksumAddress(key)] = entry
+    }
+    return out
+  }
+
+  /**
+   * The overrides a specific execution needs: only the touched accounts, and
+   * for each only the touched slots. An execution recorded by a
+   * ForkingStateManager reads pre-state through the overlay first, so what it
+   * touched is exactly what upstream has to see to reproduce it; everything
+   * else in the overlay is irrelevant to that call and stays out of the body.
+   * `extraAccounts` (sender, recipient) always get their account fields —
+   * balance, nonce, code — but never their storage: a recipient's slots are
+   * exactly what the touched set already narrows down.
+   */
+  asStateOverridesFor(touched: TouchedReads, extraAccounts: Iterable<string> = []): StateOverrides {
+    const out: StateOverrides = {}
+    const slotsByAccount = new Map<string, string[]>()
+    for (const s of touched.slots) {
+      const i = s.indexOf(':')
+      const key = s.slice(0, i)
+      let list = slotsByAccount.get(key)
+      if (!list) slotsByAccount.set(key, (list = []))
+      list.push(s.slice(i + 1))
+    }
+    for (const key of touched.accounts) {
+      const a = this.accounts.get(key)
+      if (!a) continue
       const entry: StateOverrideAccount = {}
       let set = false
       if (a.balanceSet) {
@@ -167,14 +210,87 @@ export class Overlay {
         entry.code = bytesToHex(a.code)
         set = true
       }
-      if (a.storage.size > 0) {
-        entry.stateDiff = {}
-        for (const [slot, val] of a.storage) entry.stateDiff[slot] = val
+      for (const slot of slotsByAccount.get(key) ?? []) {
+        const val = a.storage.get(slot)
+        if (val === undefined) continue
+        ;(entry.stateDiff ??= {})[slot] = val
         set = true
       }
       if (set) out[checksumAddress(key)] = entry
     }
+    for (const addr of extraAccounts) {
+      const key = addrKey(addr)
+      const cs = checksumAddress(key)
+      const a = this.accounts.get(key)
+      if (!a) continue
+      const entry: StateOverrideAccount = out[cs] ?? {}
+      if (a.balanceSet && entry.balance === undefined) entry.balance = toQuantity(a.balance)
+      if (a.nonceSet && entry.nonce === undefined) entry.nonce = toQuantity(a.nonce)
+      if (a.codeSet && entry.code === undefined) entry.code = bytesToHex(a.code)
+      if (Object.keys(entry).length > 0) out[cs] = entry
+    }
     return out
+  }
+
+  /**
+   * Approximate JSON size of asStateOverrides(), maintained from the cached
+   * entries — cheap enough to consult on every call to decide whether the
+   * full overlay is still small enough to ship as-is.
+   */
+  approxOverrideBytes(): number {
+    let total = 2
+    for (const key of this.accounts.keys()) {
+      const entry = this.overrideEntry(key)
+      if (entry) total += this.entryBytes.get(key) ?? 0
+    }
+    return total
+  }
+
+  private overrideCache = new Map<string, StateOverrideAccount | null>()
+  private entryBytes = new Map<string, number>()
+
+  /** Cached geth-style override entry for one account, or null when it has no set field. */
+  private overrideEntry(key: string): StateOverrideAccount | null {
+    const cached = this.overrideCache.get(key)
+    if (cached !== undefined) return cached
+    const a = this.accounts.get(key)
+    if (!a) return null
+    const entry: StateOverrideAccount = {}
+    let set = false
+    let bytes = 48 // '"0x<40>":{},' plus field names
+    if (a.balanceSet) {
+      entry.balance = toQuantity(a.balance)
+      bytes += 12 + entry.balance.length
+      set = true
+    }
+    if (a.nonceSet) {
+      entry.nonce = toQuantity(a.nonce)
+      bytes += 10 + entry.nonce.length
+      set = true
+    }
+    if (a.codeSet) {
+      entry.code = bytesToHex(a.code)
+      bytes += 10 + entry.code.length
+      set = true
+    }
+    if (a.storage.size > 0) {
+      entry.stateDiff = {}
+      for (const [slot, val] of a.storage) entry.stateDiff[slot] = val
+      bytes += 14 + a.storage.size * 137 // '"0x<64>":"0x<64>",'
+      set = true
+    }
+    const result = set ? entry : null
+    this.overrideCache.set(key, result)
+    this.entryBytes.set(key, set ? bytes : 0)
+    return result
+  }
+
+  /** Drop the cached override entries of accounts a mutation touched. */
+  private invalidate(keys: Iterable<string>): void {
+    for (const k of keys) {
+      this.overrideCache.delete(k)
+      this.entryBytes.delete(k)
+    }
   }
 
   // --- mutations ----------------------------------------------------------
@@ -218,6 +334,8 @@ export class Overlay {
         delta.deleted.delete(key)
       }
     }
+    this.invalidate(delta.updated)
+    this.invalidate(delta.deleted)
     return delta
   }
 
@@ -236,6 +354,7 @@ export class Overlay {
     }
     a.balance = balance
     a.balanceSet = true
+    this.invalidate([key])
     return { updated: new Set([key]), deleted: new Set() }
   }
 
@@ -332,6 +451,7 @@ export class Overlay {
         delta.updated.add(key)
       }
     }
+    this.invalidate(Object.keys(d.accounts))
     return delta
   }
 
@@ -380,6 +500,7 @@ export class Overlay {
         this.accounts.delete(key)
       }
     }
+    this.invalidate(delta.updated)
     return { count, delta }
   }
 
@@ -400,6 +521,7 @@ export class Overlay {
     }
     a.code = code
     a.codeSet = true
+    this.invalidate([key])
     return { updated: new Set([key]), deleted: new Set() }
   }
 
@@ -462,6 +584,8 @@ export class Overlay {
         delta.updated.add(key)
       }
     }
+    this.invalidate(delta.updated)
+    this.invalidate(delta.deleted)
     return delta
   }
 }
