@@ -132,7 +132,7 @@ export class EvmSandbox {
     private readonly env: Env,
   ) {
     this.cfg = loadConfig(env)
-    this.upstream = new Upstream(this.cfg.upstreamRpcs)
+    this.upstream = new Upstream(this.cfg.upstreamRpcs, this.cfg.upstreamTimeoutMs)
     this.headTime = new HeadTimeForwarder(this.upstream)
     // Code entries persist in DO storage (not subrequest-counted, survives
     // eviction); everything else stays on the in-memory TTL cache. Upstream

@@ -65,7 +65,7 @@ function stubUpstream(): Upstream {
 }
 
 /** A ledger contract with `slots` written slots, plus `padded` 24KB contracts nobody calls. */
-function setup(slots: number, padded: number) {
+function setup(slots: number, padded: number, overrideFilterMinBytes = 256 * 1024) {
   const overlay = new Overlay()
   const storage: Record<string, Hex> = {}
   for (let i = 1; i <= slots; i++) storage[word(BigInt(i))] = word(BigInt(i) * 10n)
@@ -80,7 +80,7 @@ function setup(slots: number, padded: number) {
   overlay.load(addrKey(FROM), { balance: toQuantity(10n ** 18n), nonce: '0x5' })
   const fetcher = new Fetcher(stubUpstream(), 60_000, new Map())
   const kinds = new AccountKinds((a) => fetcher.getBalanceUncached(a), { put: async () => {} })
-  const executor = new Executor(overlay, fetcher, cfg, new Impersonators(), kinds)
+  const executor = new Executor(overlay, fetcher, { ...cfg, overrideFilterMinBytes }, new Impersonators(), kinds)
   return { overlay, executor, others }
 }
 
@@ -132,6 +132,14 @@ describe('Executor.overridesForCall', () => {
     const got = await executor.overridesForCall(readSlot(word(99_999n)), null)
     expect(got[checksumAddress(LEDGER)]!.stateDiff).toBeUndefined()
     expect(got[checksumAddress(LEDGER)]!.code).toBe(LEDGER_CODE)
+  })
+
+  it('OVERRIDE_FILTER_MIN_BYTES: -1 never filters, 0 always does', async () => {
+    const never = setup(2000, 8, -1)
+    expect(await never.executor.overridesForCall(readSlot(word(7n)), null)).toEqual(never.overlay.asStateOverrides())
+    const always = setup(50, 0, 0)
+    const got = await always.executor.overridesForCall(readSlot(word(7n)), null)
+    expect(got[checksumAddress(LEDGER)]!.stateDiff).toEqual({ [word(7n)]: word(70n) })
   })
 
   it('falls back to the whole overlay when the run reaches a chain-specific precompile', async () => {

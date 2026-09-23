@@ -95,11 +95,22 @@ export function loadConfig(env: Env): Config {
     rateLimitExempt: splitCSV(env.RATE_LIMIT_EXEMPT),
     genesis: parseGenesis(env.GENESIS),
     balanceMultiplier: parseBalanceMultiplier(env.BALANCE_MULTIPLIER),
+    overrideFilterMinBytes: parseIntOr(env.OVERRIDE_FILTER_MIN_BYTES, DEFAULT_OVERRIDE_FILTER_MIN_BYTES),
+    upstreamTimeoutMs: Math.max(1000, parseIntOr(env.UPSTREAM_TIMEOUT_MS, DEFAULT_UPSTREAM_TIMEOUT_MS)),
     resolved: false,
   }
 }
 
 export const DEFAULT_BALANCE_MULTIPLIER = 1000n
+export const DEFAULT_OVERRIDE_FILTER_MIN_BYTES = 256 * 1024
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 20_000
+
+/** Integer (negative allowed); blank/invalid → dflt. */
+function parseIntOr(raw: string | undefined, dflt: number): number {
+  const t = (raw ?? '').trim()
+  if (!/^-?[0-9]+$/.test(t)) return dflt
+  return Number(t)
+}
 
 /** Positive integer; blank/invalid → 1000. A value of 1 turns scaling off. */
 export function parseBalanceMultiplier(raw: string | undefined): bigint {

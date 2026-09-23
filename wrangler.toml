@@ -101,6 +101,15 @@ new_sqlite_classes = ["EvmSandbox"]
 #                             per cold SLOAD — can exceed the Free
 #                             50-subrequest cap on heavy calls).
 #   CACHE_TTL                 upstream-read cache TTL (seconds).
+#   OVERRIDE_FILTER_MIN_BYTES overlay size (JSON bytes) above which a forwarded
+#                             eth_call / eth_estimateGas carries only the
+#                             overlay entries a speculative local run of the
+#                             call read, instead of the whole overlay (which
+#                             upstream nodes refuse past ~1-8 MB). 0 = always
+#                             filter, -1 = never (ship everything). Default
+#                             262144.
+#   UPSTREAM_TIMEOUT_MS       per-request deadline on upstream fetches; a hit
+#                             fails over like a transport error. Default 20000.
 #   REJECT_UPSTREAM_SIGNERS   replay guard: "auto" (on iff CHAIN_ID == upstream
 #                             id), "true", or "false". When on, rejects
 #                             eth_sendRawTransaction from any signer holding a

@@ -135,7 +135,11 @@ export class Upstream {
   // resets on DO eviction, like cooldown.)
   private readonly unsupported = new Map<string, Set<string>>()
 
-  constructor(private readonly urls: string[]) {
+  constructor(
+    private readonly urls: string[],
+    /** Per-fetch deadline. A hung connection otherwise holds the request — and, behind it, the sandbox write queue — indefinitely. */
+    private readonly timeoutMs = 20_000,
+  ) {
     if (urls.length === 0) throw new Error('no upstream RPC configured')
   }
 
@@ -193,6 +197,7 @@ export class Upstream {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body,
+            signal: AbortSignal.timeout(this.timeoutMs),
           })
           if (!r.ok) {
             lastErr = new Error(`upstream HTTP ${r.status}`)

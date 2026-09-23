@@ -32,7 +32,7 @@ import { MissRecorder, type BlockCtx, type Fetcher } from './fetcher'
 import { ForkingStateManager, TouchedState } from './statemanager'
 import { headTime } from './head'
 import type { Impersonators } from './impersonate/store'
-import { rejectUpstreamSignersEnabled } from './config'
+import { DEFAULT_OVERRIDE_FILTER_MIN_BYTES, rejectUpstreamSignersEnabled } from './config'
 import { decodeRevertReason } from './ui/decode'
 import type { MessageTxFields } from './lib/eip191'
 import { isLegacyFee, type MessageTxFee } from './message_tx'
@@ -51,11 +51,6 @@ const PREFETCH_SENDER_BALANCE = '0xffffffffffffffffffffffffff'
 // at least one data-dependent hop, so real txs converge in 1-3.
 const MAX_WARM_ROUNDS = 6
 
-// Below this (approximate) size the whole overlay is shipped as stateOverrides
-// as before: filtering it costs a speculative local run, and a small body is
-// accepted by every upstream anyway. Above it, forwarded calls carry only the
-// overlay entries the call was observed to read.
-const FILTER_OVERRIDES_MIN_BYTES = 256 * 1024
 
 // Addresses below 0x100 that are not the Cancun precompiles (0x01-0x0a):
 // chain-specific precompiles (Arbitrum's ArbSys & co. at 0x64-0x6f) that the
@@ -494,20 +489,31 @@ export class Executor {
    * recipient) always get their account fields.
    */
   private overridesFrom(spec: Speculation | null, extra: Hex[], opts: { bestEffort?: boolean } = {}): StateOverrides {
-    if (this.overlay.approxOverrideBytes() <= FILTER_OVERRIDES_MIN_BYTES) return this.overlay.asStateOverrides()
+    if (this.shipWholeOverlay()) return this.overlay.asStateOverrides()
     if (!spec || spec.unknownPath) return this.overlay.asStateOverrides()
     if (!spec.complete && !opts.bestEffort) return this.overlay.asStateOverrides()
     return this.overlay.asStateOverridesFor(spec.touched, extra)
   }
 
   /**
+   * Below the configured size the whole overlay is shipped as stateOverrides,
+   * as before: filtering costs a speculative local run, and a small body is
+   * accepted by every upstream anyway. A negative setting never filters.
+   */
+  private shipWholeOverlay(): boolean {
+    const min = this.cfg.overrideFilterMinBytes ?? DEFAULT_OVERRIDE_FILTER_MIN_BYTES
+    if (min < 0) return true
+    return this.overlay.approxOverrideBytes() <= min
+  }
+
+  /**
    * The stateOverrides for forwarding an eth_call / eth_estimateGas upstream.
    * Runs the call speculatively against overlay + cache first when the overlay
-   * has grown past FILTER_OVERRIDES_MIN_BYTES; otherwise the whole overlay,
+   * has grown past cfg.overrideFilterMinBytes; otherwise the whole overlay,
    * with no local execution at all.
    */
   async overridesForCall(args: CallArgs, overrides: Map<string, AccountOverride> | null): Promise<StateOverrides> {
-    if (this.overlay.approxOverrideBytes() <= FILTER_OVERRIDES_MIN_BYTES) return this.overlay.asStateOverrides()
+    if (this.shipWholeOverlay()) return this.overlay.asStateOverrides()
     const extra: Hex[] = []
     if (args.from) extra.push(args.from)
     if (args.to) extra.push(args.to)

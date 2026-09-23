@@ -29,6 +29,8 @@ export interface Env {
   GENESIS?: string
   /** Sandbox native balance = upstream balance × this, until the account's own state takes over. Default 1000. */
   BALANCE_MULTIPLIER?: string
+  OVERRIDE_FILTER_MIN_BYTES?: string
+  UPSTREAM_TIMEOUT_MS?: string
 }
 
 export type EthCallStorageMode = 'stateOverride' | 'getStorageAt'
@@ -74,6 +76,15 @@ export interface Config {
    * the overlay tracks the balance and upstream no longer matters.
    */
   balanceMultiplier: bigint
+  /**
+   * Overlay size (approximate JSON bytes) above which a forwarded eth_call /
+   * eth_estimateGas carries only the overlay entries a speculative local run
+   * of the call read, instead of the whole overlay. 0 filters always, a
+   * negative value never (the pre-filtering behaviour).
+   */
+  overrideFilterMinBytes: number
+  /** Per-request timeout on upstream fetches; a hit fails over like a transport error. */
+  upstreamTimeoutMs: number
   resolved: boolean
 }
 

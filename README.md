@@ -418,6 +418,8 @@ out of committed `[vars]`, or the next deploy clobbers them.
 | `CACHE_TTL` | upstream read cache TTL, seconds | `12` |
 | `REJECT_UPSTREAM_SIGNERS` | replay guard: `auto` / `true` / `false` | `auto` |
 | `BALANCE_MULTIPLIER` | an account with no sandbox balance yet shows upstream × this; `1` turns it off | `1000` |
+| `OVERRIDE_FILTER_MIN_BYTES` | overlay size (JSON bytes) above which a forwarded `eth_call` carries only the overlay entries a local speculative run of it read (see [storage modes](#eth_call-storage-modes)); `0` always filters, `-1` never | `262144` |
+| `UPSTREAM_TIMEOUT_MS` | per-request deadline on upstream fetches; a hit fails over like a transport error | `20000` |
 | `ADMINS` | comma-separated admin addresses; enables impersonation, clear, set-code | (none) |
 | `IMPERSONATE` | seed mappings `B:A,B2:A2` (impersonator:impersonatee) | (none) |
 | `CORS_ORIGINS` | comma-separated exact-match allowlist; empty = `*` | `*` |
