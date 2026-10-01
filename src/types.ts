@@ -7,7 +7,9 @@ import type { Hex } from './lib/hex'
 // Worker bindings (wrangler [vars] + secrets + the Durable Object namespace).
 // --------------------------------------------------------------------------
 export interface Env {
-  EVM_SANDBOX: DurableObjectNamespace
+  /** Bound on EVM deployments; a Bitcoin deployment binds BTC_SANDBOX instead. */
+  EVM_SANDBOX?: DurableObjectNamespace
+  BTC_SANDBOX?: DurableObjectNamespace
   UPSTREAM_RPC: string
   UPSTREAM_ETHERSCAN: string
   /** "etherscan" | "blockscout"; unset = sniffed from the UPSTREAM_ETHERSCAN URL. */
@@ -33,6 +35,18 @@ export interface Env {
   BALANCE_MULTIPLIER?: string
   OVERRIDE_FILTER_MIN_BYTES?: string
   UPSTREAM_TIMEOUT_MS?: string
+
+  // --- Bitcoin deployments (src/btc) ---------------------------------------
+  /** "mainnet" (default) | "testnet" | "signet" | "regtest": address prefixes. */
+  BTC_NETWORK?: string
+  /** Esplora base URL(s), comma-separated, each ending in /api. Unset = standalone chain. */
+  UPSTREAM_ESPLORA?: string
+  /** Largest single faucet mint, satoshis. */
+  FAUCET_MAX_SATS?: string
+  /** Minimum relay feerate, satoshis per 1000 vbytes (default 1000). */
+  MIN_RELAY_FEE_SAT_KVB?: string
+  /** Feerate in sat/vB the fee estimators report (default 2). */
+  FEE_RATE_SAT_VB?: string
 }
 
 export type EthCallStorageMode = 'stateOverride' | 'getStorageAt'

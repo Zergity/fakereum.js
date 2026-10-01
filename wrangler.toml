@@ -63,6 +63,13 @@ class_name = "EvmSandbox"
 tag = "v1"
 new_sqlite_classes = ["EvmSandbox"]
 
+# The Bitcoin sandbox's class. Migrations are shared by every environment, so
+# the EVM Workers get this (unbound, unused) namespace too; src/index.ts exports
+# both classes so the script resolves everywhere. Only [env.btc] binds it.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["BtcSandbox"]
+
 # ---------------------------------------------------------------------------
 # Configuration (mirrors the Go fakereum flags/env). `vars` are NON-inheritable:
 # each [env.<chainid>] carries its complete set. Shared knobs, documented once:
@@ -267,4 +274,40 @@ CACHE_TTL = "12"
 REJECT_UPSTREAM_SIGNERS = "true"
 IMPERSONATE = ""
 RATE_LIMIT_RPS = "200"
+RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"
+
+# ---------------------------------------------------------------------------
+# Bitcoin (mainnet fork). Same Worker script as the EVM chains, but it binds
+# BTC_SANDBOX instead of EVM_SANDBOX and none of the EVM vars apply.
+#   npm run deploy -- btc            (hostname fakereum-btc.$DEPLOY_DOMAIN)
+# ---------------------------------------------------------------------------
+[env.btc]
+name = "fakereum-btc-rpc"
+workers_dev = true
+
+[[env.btc.durable_objects.bindings]]
+name = "BTC_SANDBOX"
+class_name = "BtcSandbox"
+
+# Knobs, all optional:
+#   BTC_NETWORK            mainnet (default) | testnet | signet | regtest. Picks
+#                          the address prefixes; the upstream must match.
+#   UPSTREAM_ESPLORA       Esplora base URL(s), comma-separated, each ending in
+#                          /api; tried in order. Reads (balances, history, blocks
+#                          below the fork point) fall through to it, and the
+#                          sandbox timeline starts at the upstream tip seen on
+#                          the first request. Unset = a standalone chain that
+#                          starts at height 0 with no history.
+#   FAUCET_MAX_SATS        largest single fakereum_faucet mint (default 100 BTC).
+#   MIN_RELAY_FEE_SAT_KVB  minimum relay feerate, satoshis per 1000 vbytes
+#                          (default 1000, i.e. 1 sat/vB).
+#   FEE_RATE_SAT_VB        feerate the fee estimators report (default 2).
+#   UPSTREAM_TIMEOUT_MS, RATE_LIMIT_RPS, RATE_LIMIT_EXEMPT, CORS_ORIGINS: as for
+#                          the EVM chains.
+# Endpoint note: mempool.space and blockstream.info both serve the Esplora API
+# keyless; list both so a rate limit on one fails over to the other.
+[env.btc.vars]
+BTC_NETWORK = "mainnet"
+UPSTREAM_ESPLORA = "https://mempool.space/api,https://blockstream.info/api"
+RATE_LIMIT_RPS = "50"
 RATE_LIMIT_EXEMPT = "127.0.0.1,::1,10.0.0.0/8"

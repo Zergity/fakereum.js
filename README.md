@@ -1160,6 +1160,77 @@ The `rpc`, `etherscanApi` and `explorer` URLs are derived from the request's own
 `Host` (honoring `X-Forwarded-Proto` / `X-Forwarded-Host`), so they're reachable
 exactly the way the caller reached the sandbox.
 
+## Bitcoin sandbox
+
+The same Worker script also deploys as a Bitcoin sandbox (`npm run deploy -- btc`,
+the `[env.btc]` block in `wrangler.toml`). It binds its own Durable Object class,
+`BtcSandbox`, and shares nothing with the EVM path except the Worker plumbing:
+CORS, the rate limiter and the deploy script. It has not been deployed yet.
+
+Bitcoin has no accounts and no balances to override, so the model is different.
+State is a set of unspent outputs. The sandbox keeps its own timeline of
+synthetic blocks, starting at whatever block the upstream was at on the first
+request (pinned in storage from then on), and every accepted transaction is
+mined straight away into a block of its own. Reads of anything older than that
+fork point, and of transactions the sandbox doesn't know, go to the upstream
+Esplora API. With `UPSTREAM_ESPLORA` unset the chain is standalone and starts
+empty at height 0, which is also how the tests run.
+
+Two surfaces, plus discovery:
+
+| route | what |
+|---|---|
+| `/api/...` | Esplora REST: `address`/`scripthash` (stats, `utxo`, `txs`), `tx` (`hex`, `status`, `outspend`), `block`, `block-height`, `blocks/tip/*`, `fee-estimates`, `POST /tx` |
+| `/rpc` | bitcoind subset: `getblockchaininfo`, `getblockcount`, `getbestblockhash`, `getblockhash`, `getblock`, `getrawtransaction`, `sendrawtransaction`, `testmempoolaccept`, `estimatesmartfee`, `getmempoolinfo` |
+| `/rpc` | `fakereum_faucet [address, sats]`, `fakereum_mine [n]`, `fakereum_info` |
+| `/fakereum` | discovery document: network, endpoint URLs, fork height, tip |
+
+Funding is a faucet. `fakereum_faucet` creates coins for an address as a
+one-output transaction spending a synthetic outpoint that exists on no real
+chain, capped per call by `FAUCET_MAX_SATS`. After that, the owner signs an
+ordinary transaction with their real key and broadcasts it to `/api/tx` or
+`sendrawtransaction`.
+
+```
+curl -s $BASE/rpc -d '{"jsonrpc":"2.0","id":1,"method":"fakereum_faucet","params":["bc1q…",100000000]}'
+```
+
+**Only coins created inside the sandbox can be spent.** A Bitcoin transaction
+carries no chain id, so a signed spend of a real mainnet output would be just as
+valid on mainnet as here. Accepting one would mean handing out a replayable
+signature, so it is refused with `bad-txns-inputs-missingorspent`. Minted
+outputs have synthetic txids, so a transaction spending them is invalid
+anywhere else. Spending real outputs will need the same treatment the EVM side
+gives upstream accounts (a signed message instead of a raw transaction); it
+isn't built.
+
+What a transaction is checked for: well-formed encoding, no duplicate or
+missing inputs, value in range, outputs not exceeding inputs, `nLockTime`
+finality against the next block height or median time past, a minimum relay
+feerate, and a valid signature on every input. Signature checking is not a
+script interpreter. It recognizes P2PKH, P2WPKH, P2SH-P2WPKH and taproot
+key-path spends, and rejects other input types by name (multisig, P2WSH,
+taproot script path). BIP68 relative locktimes aren't enforced. The sighash and
+verification code is tested against Bitcoin Core's sighash vectors, the BIP143
+worked examples and the BIP341 wallet vectors.
+
+| var | default | |
+|---|---|---|
+| `BTC_NETWORK` | `mainnet` | address prefixes: `mainnet`, `testnet`, `signet`, `regtest` |
+| `UPSTREAM_ESPLORA` | unset | Esplora base URLs ending in `/api`, comma-separated, tried in order |
+| `FAUCET_MAX_SATS` | 100 BTC | largest single mint |
+| `MIN_RELAY_FEE_SAT_KVB` | `1000` | minimum relay feerate, satoshis per 1000 vbytes |
+| `FEE_RATE_SAT_VB` | `2` | feerate the fee estimators report |
+
+`RATE_LIMIT_RPS`, `RATE_LIMIT_EXEMPT`, `CORS_ORIGINS` and `UPSTREAM_TIMEOUT_MS`
+behave as they do for the EVM chains. The faucet is open: the coins are fake and
+can't leave the sandbox, so it is guarded only by the per-call cap and the rate
+limit.
+
+The first deploy of any environment after this change also applies migration
+`v2` (the `BtcSandbox` namespace), since migrations are shared. EVM Workers don't
+bind it.
+
 ## Rate limiting
 
 `RATE_LIMIT_RPS` enables a per-IP token bucket keyed on `CF-Connecting-IP`.
@@ -1173,7 +1244,7 @@ are compared as v4-mapped v6, so one prefix check covers both).
 ## Repo layout
 
 ```
-src/index.ts              front Worker: forwards into the DO
+src/index.ts              front Worker: forwards into the EVM or Bitcoin DO
 src/do/sandbox_do.ts      the EvmSandbox Durable Object: routing, RPC, persistence, WS
 src/executor.ts           EVM driver: raw + signed-message txs, local calls, prefetch
 src/statemanager.ts       async StateManager: overlay over upstream, diff capture
@@ -1189,6 +1260,7 @@ src/import_balance.ts     cross-chain balance import
 src/impersonate/          B↔A map, request/response NAT, admin RPCs
 src/ui/                   landing, explorer, lists, import, admin pages
 src/lib/                  hex, chains, blocktag, eip191, eip712, cors, rate limit, ipnet
+src/btc/                  the Bitcoin sandbox: ledger, tx/sighash/verify, Esplora + RPC node, DO
 scripts/deploy.sh         one chain's deploy: env block + secrets + hostname
 sdk/                      fakereum-sdk, the client package
 test/, sdk/test/          vitest suites + two live smoke scripts
@@ -1196,8 +1268,8 @@ test/, sdk/test/          vitest suites + two live smoke scripts
 
 ## Status and known limits
 
-As of the last check: **196 tests across 16 files pass** (`npm test`), and the
-worker bundles for `workerd` at **~317 KB gzip** (`npm run build`), comfortably
+As of the last check: **233 tests across 20 files pass** (`npm test`), and the
+worker bundles for `workerd` at **~339 KB gzip** (`npm run build`), comfortably
 under the Free plan's 3 MB script limit. Three forks are configured and
 deployed — Arbitrum One, Robinhood Chain and Hemi — each as its own Worker and
 Durable Object, reachable on its own derion.io hostname.
