@@ -12,7 +12,7 @@ import { addrEq, addrKey, checksumAddress, toBigInt } from '../lib/hex'
 import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
 import { chainName } from '../lib/chains'
-import { deployLabel, esc, explorerCSS } from './html'
+import { deployLabel, esc, renderShell } from './html'
 
 export interface RenderAddressOptions {
   address: Hex
@@ -41,7 +41,7 @@ interface TxRow {
   gasUsed: string
 }
 
-const SANDBOX_PILL = '<span class="pill sandbox">sandbox</span>'
+const SANDBOX_PILL = '<span class="badge sandbox">sandbox</span>'
 
 /** code 0x-hex (empty / "0x" means EOA). */
 function codeBytesLen(code: Hex | undefined): number {
@@ -125,100 +125,80 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
   const explorerURL = explorer.base + '/address/' + address
 
   // ------------------------------------------------------------------ markup
+  const row = (k: string, v: string) => `      <dl class="kv"><dt>${k}:</dt><dd>${v}</dd></dl>\n`
   const parts: string[] = []
 
-  parts.push(`<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sandbox address ${esc(address.slice(0, 10))}…</title>
-<style>${explorerCSS}
-  .pill { display:inline-block; padding:.1em .55em; border-radius:999px; font-size:.75rem; border:1px solid #30363d; color:#7d8590; margin-left:.4em; vertical-align:middle; }
-  .pill.sandbox { color:#d2a8ff; border-color:#6e40c9; }
-  table { width:100%; border-collapse: collapse; margin: .5rem 0 1.5rem; font-size:.85rem; }
-  table th, table td { border-bottom:1px solid #30363d; padding:.4rem .5rem; text-align:left; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  table th { color:#7d8590; font-weight:normal; font-family: ui-sans-serif, system-ui, sans-serif; }
-  table tr:hover { background:#161b22; }
-  .sig { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.82rem; color:#a5d6ff; }
-  ul.sigs { padding-left:1.1rem; margin:.25rem 0 1rem; }
-</style>
-</head>
-<body>
-  <div class="nav"><a href="${esc(baseURL)}/">&larr; fakereum</a></div>
-  <div class="tag">sandbox address · ${esc(cfg.networkName)} (chain ${esc(cfg.chainId.toString())})${isContract ? ' · contract' : ' · EOA'}</div>
-  <h1>${esc(address)}${hasOverlay ? SANDBOX_PILL : ''}${selfDestructed ? '<span class="pill err">self-destructed</span>' : ''}</h1>
+  parts.push(`  <div class="card"><div class="hd">Overview ${isContract ? '<span class="badge">Contract</span>' : '<span class="badge">EOA</span>'}${hasOverlay ? SANDBOX_PILL : ''}${selfDestructed ? '<span class="badge err">self-destructed</span>' : ''}</div>
+    <div class="bd">
+${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? ' ' + SANDBOX_PILL : upstreamScaleNote}`)}${row('Nonce', `${esc(nonce)}${nonceSet ? ' ' + SANDBOX_PILL : ''}`)}${row('Code size', `${esc(codeSize.toString())} bytes${codeSet ? ' ' + SANDBOX_PILL : ''}`)}${row(
+    'View on',
+    `<a href="${esc(explorerURL)}" rel="noopener noreferrer">${esc(explorer.name)} &rarr;</a> <span class="muted">(${esc(upstreamName)}${upstreamId ? ' · id ' + esc(upstreamId.toString()) : ''})</span>`,
+  )}    </div>
+  </div>
 `)
-
-  parts.push(`
-  <dl>
-    <dt>Balance (wei)</dt> <dd>${esc(balance)}${balanceSet ? ' ' + SANDBOX_PILL : upstreamScaleNote}</dd>
-    <dt>Nonce</dt>         <dd>${esc(nonce)}${nonceSet ? ' ' + SANDBOX_PILL : ''}</dd>
-    <dt>Code size</dt>     <dd>${esc(codeSize.toString())} bytes${codeSet ? ' ' + SANDBOX_PILL : ''}</dd>
-    <dt>Type</dt>          <dd>${isContract ? 'contract' : 'EOA'}</dd>
-    <dt>View on</dt>       <dd><a href="${esc(explorerURL)}" rel="noopener noreferrer">${esc(explorer.name)} &rarr;</a> <span class="muted">(${esc(upstreamName)}${upstreamId ? ' · id ' + esc(upstreamId.toString()) : ''})</span></dd>
-  </dl>
-`)
-
-  // --- overlay storage ------------------------------------------------------
-  if (storageRows.length > 0) {
-    const rows = storageRows
-      .map((s) => `<tr><td>${esc(s.key)}</td><td>${esc(s.value)}</td></tr>`)
-      .join('')
-    parts.push(`
-  <div class="tag">sandbox storage (${esc(storageRows.length.toString())} slot${storageRows.length !== 1 ? 's' : ''})</div>
-    <table>
-      <thead><tr><th>slot</th><th>value</th></tr></thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-`)
-  }
 
   // --- sandbox transactions -------------------------------------------------
-  parts.push(`
-  <div class="tag">sandbox transactions (${esc(txRows.length.toString())})</div>
-`)
   if (txRows.length > 0) {
     const rows = txRows
       .map(
         (t) => `
           <tr>
-            <td><a href="${esc(t.url)}">${esc(t.hash.slice(0, 12))}…</a></td>
-            <td>${esc(t.role)}</td>
-            <td class="${t.statusOK ? 'ok' : 'err'}">${esc(t.status)}</td>
+            <td><a class="mono" href="${esc(t.url)}">${esc(t.hash.slice(0, 14))}…</a></td>
             <td>${esc(t.block)}</td>
-            <td>${esc(t.gasUsed)}</td>
+            <td><span class="badge">${esc(t.role)}</span></td>
+            <td>${t.statusOK ? '<span class="badge ok">Success</span>' : '<span class="badge err">Reverted</span>'}</td>
+            <td class="num">${esc(t.gasUsed)}</td>
           </tr>`,
       )
       .join('')
-    parts.push(`
-    <table>
-      <thead><tr><th>tx</th><th>role</th><th>status</th><th>block</th><th>gas used</th></tr></thead>
-      <tbody>
-        ${rows}
+    parts.push(`  <div class="card">
+    <div class="hd">Sandbox transactions <span class="muted">(${esc(txRows.length.toString())})</span></div>
+    <div class="tablewrap"><table class="list">
+      <thead><tr><th>Txn hash</th><th>Block</th><th>Role</th><th>Status</th><th class="num">Gas used</th></tr></thead>
+      <tbody>${rows}
       </tbody>
-    </table>
+    </table></div>
+  </div>
 `)
   } else {
-    parts.push(`
-    <p class="muted">no sandbox transactions touch this address.</p>
+    parts.push(`  <div class="card"><div class="hd">Sandbox transactions</div><div class="empty">No sandbox transactions touch this address.</div></div>
+`)
+  }
+
+  // --- overlay storage ------------------------------------------------------
+  if (storageRows.length > 0) {
+    const rows = storageRows
+      .map((s) => `<tr><td class="wrap mono">${esc(s.key)}</td><td class="wrap mono">${esc(s.value)}</td></tr>`)
+      .join('')
+    parts.push(`  <div class="card">
+    <div class="hd">Sandbox storage <span class="muted">(${esc(storageRows.length.toString())} slot${storageRows.length !== 1 ? 's' : ''})</span></div>
+    <div class="tablewrap"><table class="list">
+      <thead><tr><th>Slot</th><th>Value</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>
 `)
   }
 
   // --- code -----------------------------------------------------------------
   if (isContract) {
-    parts.push(`
+    parts.push(`  <div class="card"><div class="pad">
     <details>
-      <summary>Code (${esc(codeSize.toString())} bytes)</summary>
+      <summary>Contract bytecode (${esc(codeSize.toString())} bytes)</summary>
       <pre>${esc(code ?? '')}</pre>
     </details>
+  </div></div>
 `)
   }
 
-  parts.push(`</body>
-</html>`)
-
-  return parts.join('')
+  return renderShell({
+    title: `Sandbox address ${address.slice(0, 10)}…`,
+    heading: isContract ? 'Contract' : 'Address',
+    sub: address,
+    symbol: cfg.symbol,
+    networkName: cfg.networkName,
+    chainId: cfg.chainId.toString(),
+    baseURL,
+    body: parts.join(''),
+  })
 }

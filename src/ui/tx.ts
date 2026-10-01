@@ -10,7 +10,7 @@
 // interpolated value.
 
 import type { Config, DecodedCall, DecodedLogEntry, DeployMethod, StoredTx, StoredLog, AccountDiff } from '../types'
-import { deployPill, esc, explorerCSS } from './html'
+import { deployPill, esc, formatAbsUTC, humanizeAgo, renderShell } from './html'
 import { addrKey, checksumAddress, toBigInt, strip0x } from '../lib/hex'
 import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
@@ -159,61 +159,51 @@ function renderLog(l: StoredLog, decoded: DecodedLogEntry | null): string {
   const index = toBigInt(l.logIndex).toString()
   const topics = l.topics.map((t) => `<li>${esc(t)}</li>`).join('')
   const eventBlock = decoded
-    ? `        <dt>Event</dt>
-          <dd>
+    ? `      <dl class="kv"><dt>Event:</dt><dd>
 ${renderDecodedEvent(decoded)}
-          </dd>
+      </dd></dl>
 `
     : ''
-  return `    <div class="log">
-      <dl>
-        <dt>Index</dt>   <dd>${esc(index)}</dd>
-        <dt>Address</dt> <dd><a href="${esc(addrURL)}" rel="noopener noreferrer">${esc(addr)}</a></dd>
-${eventBlock}        <dt>Topics</dt>
-        <dd>
-          <ol class="topics" start="0">
-            ${topics}
-          </ol>
-        </dd>
-        <dt>Data</dt>    <dd>${esc(l.data)}</dd>
-      </dl>
+  return `    <div class="logitem">
+      <dl class="kv"><dt>Log index:</dt><dd>${esc(index)}</dd></dl>
+      <dl class="kv"><dt>Address:</dt><dd class="mono"><a href="${esc(addrURL)}" rel="noopener noreferrer">${esc(addr)}</a></dd></dl>
+${eventBlock}      <dl class="kv"><dt>Topics:</dt><dd><ol class="topics" start="0">${topics}</ol></dd></dl>
+      <dl class="kv"><dt>Data:</dt><dd class="mono">${esc(l.data)}</dd></dl>
     </div>`
 }
 
 function renderDiffRow(row: TxDiffRow): string {
   const pills =
-    (row.created ? '<span class="pill sandbox">created</span>' : '') +
+    (row.created ? '<span class="badge sandbox">created</span> ' : '') +
     (row.deployMethod ? deployPill(row.deployMethod) : '') +
-    (row.selfDestructed ? '<span class="pill err">self-destructed</span>' : '')
+    (row.selfDestructed ? ' <span class="badge err">self-destructed</span>' : '')
+  const kv = (k: string, v: string) => `      <dl class="kv"><dt>${k}:</dt><dd>${v}</dd></dl>\n`
 
   let balance = ''
   if (row.balance) {
-    balance = `        <dt>Balance</dt>
-          <dd><span class="diffpre">${esc(row.balance.pre)}</span> &rarr; <span class="diffpost">${esc(
-            row.balance.post,
-          )}</span> <span class="muted">wei</span></dd>
-`
+    balance = kv(
+      'Balance',
+      `<span class="diffpre">${esc(row.balance.pre)}</span> &rarr; <span class="diffpost">${esc(row.balance.post)}</span> <span class="muted">wei</span>`,
+    )
   }
 
   let nonce = ''
   if (row.nonce) {
-    nonce = `        <dt>Nonce</dt>
-          <dd><span class="diffpre">${esc(row.nonce.pre)}</span> &rarr; <span class="diffpost">${esc(
-            row.nonce.post,
-          )}</span></dd>
-`
+    nonce = kv(
+      'Nonce',
+      `<span class="diffpre">${esc(row.nonce.pre)}</span> &rarr; <span class="diffpost">${esc(row.nonce.post)}</span>`,
+    )
   }
 
   let code = ''
   if (row.code) {
-    code = `        <dt>Code</dt>
-          <dd>
-            <details><summary>${row.code.pre.length} &rarr; ${row.code.post.length} chars</summary>
+    code = kv(
+      'Code',
+      `<details><summary>${row.code.pre.length} &rarr; ${row.code.post.length} chars</summary>
               <div class="muted">pre</div><pre>${esc(row.code.pre)}</pre>
               <div class="muted">post</div><pre>${esc(row.code.post)}</pre>
-            </details>
-          </dd>
-`
+            </details>`,
+    )
   }
 
   let storage = ''
@@ -221,64 +211,48 @@ function renderDiffRow(row: TxDiffRow): string {
     const slotRows = row.storage
       .map(
         (s) =>
-          `                  <tr><td>${esc(s.slot)}</td><td class="diffpre">${esc(
+          `<tr><td class="wrap mono">${esc(s.slot)}</td><td class="wrap mono diffpre">${esc(
             s.pre,
-          )}</td><td class="diffpost">${esc(s.post)}</td></tr>`,
+          )}</td><td class="wrap mono diffpost">${esc(s.post)}</td></tr>`,
       )
       .join('\n')
-    storage = `        <dt>Storage (${row.storage.length})</dt>
-          <dd>
-            <table class="slots">
-              <thead><tr><th>slot</th><th>pre</th><th>post</th></tr></thead>
+    storage = kv(
+      `Storage (${row.storage.length})`,
+      `<div class="tablewrap"><table class="list">
+              <thead><tr><th>Slot</th><th>Before</th><th>After</th></tr></thead>
               <tbody>
 ${slotRows}
               </tbody>
-            </table>
-          </dd>
-`
+            </table></div>`,
+    )
   }
 
-  return `    <div class="log">
-      <dl>
-        <dt>Address</dt>
-        <dd>
-          <a href="${esc(row.addressURL)}" rel="noopener noreferrer">${esc(row.address)}</a>
-          ${pills}
-        </dd>
-${balance}${nonce}${code}${storage}      </dl>
-    </div>`
+  return `    <div class="logitem">
+${kv('Address', `<a class="mono" href="${esc(row.addressURL)}" rel="noopener noreferrer">${esc(row.address)}</a> ${pills}`)}${balance}${nonce}${code}${storage}    </div>`
 }
 
 // --- page -------------------------------------------------------------------
 
 export function renderTxPage(opts: RenderTxPageOpts): string {
-  const { tx, cfg, decoded, decodedLogs, explorer } = opts
+  const { tx, cfg, decoded, decodedLogs, explorer, baseURL } = opts
 
   const hash = tx.hash
   const statusOK = tx.status === 1
-  const status = statusOK ? 'Success' : 'Reverted'
-  const err = tx.err ?? ''
   const revertReason = tx.revertReason ?? ''
+  const err = tx.err ?? ''
+
+  const row = (k: string, v: string) => `    <dl class="kv"><dt>${k}:</dt><dd>${v}</dd></dl>\n`
+  const addrLink = (a: string) => `<a class="mono" href="${esc('/address/' + a)}" rel="noopener noreferrer">${esc(a)}</a>`
 
   const from = checksumAddress(tx.from)
-  const fromURL = '/address/' + from
+  const toBlock = tx.to ? row('To', addrLink(checksumAddress(tx.to))) : ''
 
-  let toBlock = ''
-  if (tx.to) {
-    const to = checksumAddress(tx.to)
-    const toURL = '/address/' + to
-    toBlock = `    <dt>To</dt>      <dd><a href="${esc(toURL)}" rel="noopener noreferrer">${esc(to)}</a></dd>\n`
-  }
-
-  let contractBlock = ''
-  if (tx.contractAddress) {
-    const c = checksumAddress(tx.contractAddress)
-    const cURL = '/address/' + c
-    const method = resolveDeployMethod(tx, addrKey(tx.contractAddress))
-    contractBlock = `    <dt>Contract created</dt><dd><a href="${esc(cURL)}" rel="noopener noreferrer">${esc(
-      c,
-    )}</a>${deployPill(method)}</dd>\n`
-  }
+  const contractBlock = tx.contractAddress
+    ? row(
+        'Contract created',
+        `${addrLink(checksumAddress(tx.contractAddress))} ${deployPill(resolveDeployMethod(tx, addrKey(tx.contractAddress)))}`,
+      )
+    : ''
 
   // CreatedContracts is the full deploy set (top-level + internal). Skip the one
   // matching the top-level contractAddress so it isn't rendered twice.
@@ -286,47 +260,43 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   const internal = tx.createdContracts
     .filter((a) => topLevel === null || strip0x(a).toLowerCase() !== topLevel)
     .map((a) => ({ addr: checksumAddress(a), method: resolveDeployMethod(tx, addrKey(a)) }))
-  let createdBlock = ''
-  if (internal.length > 0) {
-    const links = internal
-      .map(
-        ({ addr, method }, i) =>
-          `${i ? '<br>' : ''}<a href="${esc('/address/' + addr)}" rel="noopener noreferrer">${esc(addr)}</a>${deployPill(method)}`,
-      )
-      .join('')
-    createdBlock = `    <dt>Internal deploys</dt><dd>${links}</dd>\n`
-  }
+  const createdBlock =
+    internal.length > 0
+      ? row(
+          'Internal deploys',
+          internal.map(({ addr, method }) => `<div>${addrLink(addr)} ${deployPill(method)}</div>`).join(''),
+        )
+      : ''
 
   const valueDec = toBigInt(tx.value).toString()
-  let valueBlock = ''
-  if (valueDec !== '0') {
-    valueBlock = `    <dt>Value (wei)</dt><dd>${esc(valueDec)}</dd>\n`
-  }
+  const valueBlock = row('Value', `${esc(valueDec)} <span class="muted">wei</span>`)
 
-  const nonceDec = toBigInt(tx.nonce).toString()
   const viaBlock = tx.signedMessage
-    ? `    <dt>Submitted as</dt><dd>EIP-191 signed message <span class="muted">(personal_sign)</span></dd>\n`
+    ? row('Submitted as', 'EIP-191 signed message <span class="muted">(personal_sign)</span>')
     : ''
   const gasUsed = toBigInt(tx.gasUsed)
   const gasLimit = toBigInt(tx.gasLimit)
-  const gasLine = gasLimit > 0n ? `${esc(gasUsed.toString())} / ${esc(gasLimit.toString())}` : esc(gasUsed.toString())
+  const gasLine =
+    gasLimit > 0n
+      ? `${esc(gasUsed.toString())} <span class="muted">/ ${esc(gasLimit.toString())}</span>`
+      : esc(gasUsed.toString())
 
   // A message tx also shows the text the wallet signed and its signature, so
   // anyone can re-verify the signer with personal_ecRecover.
   const rawSection =
     (tx.signedMessage
-      ? `  <details open>
-    <summary>Signed message (EIP-191)</summary>
-    <pre>${esc(tx.signedMessage.message)}</pre>
-    <div class="muted" style="margin-top:.5rem">signature</div>
-    <pre>${esc(tx.signedMessage.signature)}</pre>
-  </details>
+      ? `<details open>
+      <summary>Signed message (EIP-191)</summary>
+      <pre>${esc(tx.signedMessage.message)}</pre>
+      <div class="muted">signature</div>
+      <pre>${esc(tx.signedMessage.signature)}</pre>
+    </details>
 `
       : '') +
-    `  <details>
-    <summary>Raw tx${tx.signedMessage ? ' <span class="muted">(v/r/s are the message signature; the sender is the message signer, not what they recover to)</span>' : ''}</summary>
-    <pre>${esc(tx.raw)}</pre>
-  </details>`
+    `<details>
+      <summary>Raw tx</summary>${tx.signedMessage ? '\n      <div class="muted">v/r/s are the message signature; the sender is the message signer, not what they recover to</div>' : ''}
+      <pre>${esc(tx.raw)}</pre>
+    </details>`
 
   const blockNumber = toBigInt(tx.blockNumber)
   let blockBlock = ''
@@ -336,96 +306,92 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
       ? `<a href="${esc(blockURL)}" rel="noopener noreferrer">${esc(blockNumber.toString())}</a>`
       : esc(blockNumber.toString())
     const onExplorer = explorer.name ? ` &middot; on ${esc(explorer.name)}` : ''
-    blockBlock = `    <dt>Block</dt><dd>${numCell} <span style="color:#7d8590">(0x${esc(
-      hexNoPrefix(blockNumber),
-    )}${onExplorer})</span></dd>\n`
+    blockBlock = row(
+      'Block',
+      `${numCell} <span class="muted">(0x${esc(hexNoPrefix(blockNumber))}${onExplorer})</span>`,
+    )
   }
 
-  let blockHashBlock = ''
-  if (tx.blockHash && tx.blockHash !== '0x') {
-    blockHashBlock = `    <dt>Block hash</dt><dd>${esc(tx.blockHash)}</dd>\n`
-  }
+  const blockTime = Number(toBigInt(tx.blockTime))
+  const timeBlock =
+    blockTime > 0
+      ? row('Timestamp', `${esc(humanizeAgo(blockTime, Math.floor(Date.now() / 1000)))} <span class="muted">(${esc(formatAbsUTC(blockTime))})</span>`)
+      : ''
 
-  const blockTime = toBigInt(tx.blockTime)
-  let blockTimeBlock = ''
-  if (blockTime > 0n) {
-    blockTimeBlock = `    <dt>Block time</dt><dd>${esc(blockTime.toString())}</dd>\n`
-  }
+  const blockHashBlock = tx.blockHash && tx.blockHash !== '0x' ? row('Block hash', `<span class="mono">${esc(tx.blockHash)}</span>`) : ''
 
-  let revertBlock = ''
-  if (revertReason) {
-    revertBlock = `    <dt>Revert reason</dt><dd class="err">${esc(revertReason)}</dd>\n`
-  }
+  const revertBlock = revertReason ? row('Revert reason', `<span class="err">${esc(revertReason)}</span>`) : ''
 
-  const errSpan = err ? ` <span class="err">(${esc(err)})</span>` : ''
+  const statusBadge = statusOK
+    ? '<span class="badge ok">&#10003; Success</span>'
+    : `<span class="badge err">&#10007; Reverted</span>${err ? ` <span class="err">(${esc(err)})</span>` : ''}`
 
   // Input data section: decoded call when available, else a hint when there is
   // a target contract but no ABI.
-  let inputSection: string
+  let inputSection = ''
   if (decoded) {
     inputSection = renderDecodedCall(decoded)
   } else if (tx.to) {
     const explorerName = explorer.name ? esc(explorer.name) : 'the upstream explorer'
-    inputSection = `    <p class="muted">no matching ABI on file for the target contract — submit it to ${explorerName} to enable decoding.</p>`
-  } else {
-    inputSection = ''
+    inputSection = `<p class="muted">No matching ABI on file for the target contract. Submit it to ${explorerName} to enable decoding.</p>`
   }
 
-  const logs = tx.logs
-    .map((l, i) => renderLog(l, decodedLogs[i] ?? null))
-    .join('\n')
-  const logsSection = logs || `    <p class="muted">no logs emitted</p>`
+  const logs = tx.logs.map((l, i) => renderLog(l, decodedLogs[i] ?? null)).join('\n')
+  const logsSection = logs || `<div class="empty">No logs emitted.</div>`
 
   const diffRows = renderTxDiff(tx)
   const diffSection =
     diffRows.length > 0
       ? diffRows.map(renderDiffRow).join('\n')
-      : `    <p class="muted">no state changes recorded for this tx.</p>`
-  const accountWord = diffRows.length === 1 ? 'account' : 'accounts'
+      : `<div class="empty">No state changes recorded for this tx.</div>`
 
-  const networkName = esc(cfg.networkName)
-  const sandboxChainID = esc(cfg.chainId.toString())
-  const hashShort = esc(hash.slice(0, 10))
+  const body = `  <div class="tabs">
+    <a href="#overview" class="on">Overview</a>
+    <a href="#logs">Logs (${tx.logs.length})</a>
+    <a href="#state">State (${diffRows.length})</a>
+  </div>
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sandbox tx ${hashShort}…</title>
-<style>${explorerCSS}</style>
-</head>
-<body>
-  <div class="nav"><a href="/">&larr; fakereum</a></div>
-  <div class="tag">sandbox transaction · ${networkName} (chain ${sandboxChainID})</div>
-  <h1>${esc(hash)}</h1>
+  <section class="panel-tab" id="overview">
+    <div class="card"><div class="bd">
+${row('Transaction hash', `<span class="mono">${esc(hash)}</span>`)}${row('Status', statusBadge)}${revertBlock}${blockBlock}${timeBlock}${blockHashBlock}${row('From', addrLink(from))}${toBlock}${contractBlock}${createdBlock}${valueBlock}${viaBlock}${row('Nonce', esc(toBigInt(tx.nonce).toString()))}${row('Gas used', gasLine)}
+    </div></div>
+    <div class="card">
+      <div class="hd">Input data</div>
+      <div class="pad">
+        ${inputSection}
+        <details ${decoded ? '' : 'open'}>
+          <summary>Raw input</summary>
+          <pre>${esc(tx.input)}</pre>
+        </details>
+        ${rawSection}
+      </div>
+    </div>
+    <form class="row" method="post" action="/undo/${esc(hash)}" onsubmit="return confirm('Undo this tx and every tx submitted after it?');">
+      <button type="submit" class="btn btn-undo">Undo back to this tx</button>
+      <span class="muted">rewinds the overlay and removes this tx and every later sandbox tx</span>
+    </form>
+  </section>
 
-  <form method="post" action="/undo/${esc(hash)}" style="margin-bottom:1rem;" onsubmit="return confirm('Undo this tx and every tx submitted after it?');">
-    <button type="submit" class="undo">Undo back to this tx</button>
-    <span class="muted" style="font-size:.85rem; margin-left:.5rem;">rewinds the overlay and removes this + every later sandbox tx</span>
-  </form>
-
-  <dl>
-    <dt>Status</dt>            <dd class="${statusOK ? 'ok' : 'err'}">${esc(status)}${errSpan}</dd>
-${revertBlock}    <dt>From</dt>              <dd><a href="${esc(fromURL)}" rel="noopener noreferrer">${esc(from)}</a></dd>
-${toBlock}${contractBlock}${createdBlock}${valueBlock}${viaBlock}    <dt>Nonce</dt>             <dd>${esc(nonceDec)}</dd>
-    <dt>Gas used / limit</dt>  <dd>${gasLine}</dd>
-${blockBlock}${blockHashBlock}${blockTimeBlock}  </dl>
-
-  <div class="tag">input data</div>
-${inputSection}
-  <details ${decoded ? '' : 'open'}>
-    <summary>Raw input</summary>
-    <pre>${esc(tx.input)}</pre>
-  </details>
-
-  <div class="tag">logs (${tx.logs.length})</div>
+  <section class="panel-tab" id="logs">
+    <div class="card"><div class="hd">Transaction receipt event logs</div>
 ${logsSection}
+    </div>
+  </section>
 
-  <div class="tag">state changes (${diffRows.length} ${accountWord})</div>
+  <section class="panel-tab" id="state">
+    <div class="card"><div class="hd">State changes <span class="muted">(${diffRows.length} ${diffRows.length === 1 ? 'account' : 'accounts'})</span></div>
 ${diffSection}
+    </div>
+  </section>`
 
-${rawSection}
-</body>
-</html>`
+  return renderShell({
+    title: `Sandbox tx ${hash.slice(0, 10)}…`,
+    heading: 'Transaction Details',
+    sub: hash,
+    symbol: cfg.symbol,
+    networkName: cfg.networkName,
+    chainId: cfg.chainId.toString(),
+    baseURL,
+    body,
+  })
 }

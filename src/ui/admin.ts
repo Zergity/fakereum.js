@@ -17,7 +17,7 @@
 //   RemoveImpersonator(address impersonator)
 
 import type { Config, ReqContext } from '../types'
-import { esc, explorerCSS } from './html'
+import { esc, renderShell } from './html'
 
 export interface RenderAdminPageOptions {
   cfg: Config
@@ -48,78 +48,14 @@ export function renderAdminPage(opts: RenderAdminPageOptions): string {
 
   const enabledJs = hasAdmins ? 'true' : 'false'
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Admin · Fakereum</title>
-<style>
-${explorerCSS}
-  :root { color-scheme: dark; }
-  body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; max-width: 760px; margin: 3rem auto; padding: 0 1.25rem; background:#0e1116; color:#e6edf3; }
-  h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
-  h2 { margin: 2rem 0 .75rem; font-size: 1.05rem; color:#e6edf3; }
-  h3 { margin: 1.5rem 0 .5rem; font-size: .95rem; color:#e6edf3; }
-  .tag { color:#7d8590; font-size: .85rem; letter-spacing:.05em; text-transform: uppercase; }
-  a { color:#58a6ff; text-decoration:none; }
-  a:hover { text-decoration:underline; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .muted { color:#7d8590; }
-  .panel { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem 1.1rem; }
-  table { width:100%; border-collapse: collapse; }
-  th, td { padding: .55rem .5rem; border-bottom:1px solid #21262d; vertical-align: middle; }
-  th { text-align:left; color:#7d8590; font-weight:500; font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; }
-  td.mono, th.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.92rem; word-break: break-all; }
-  tr:last-child td { border-bottom: 0; }
-  button { background:#238636; color:#fff; border:0; padding:.5rem .9rem; font: inherit; border-radius:6px; cursor:pointer; }
-  button:hover { background:#2ea043; }
-  button.ghost { background:#21262d; color:#e6edf3; }
-  button.ghost:hover { background:#30363d; }
-  button.danger { background:#21262d; color:#f85149; padding:.35rem .7rem; font-size:.85rem; }
-  button.danger:hover { background:#30363d; }
-  button:disabled { background:#30363d; color:#7d8590; cursor:default; }
-  input[type=text], textarea { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.55rem .7rem; font: inherit; width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; box-sizing: border-box; }
-  input[type=text]:focus, textarea:focus { outline:none; border-color:#58a6ff; }
-  textarea { min-height: 4.5rem; resize: vertical; font-size:.92rem; }
-  .clear-grid { display:grid; grid-template-columns: 1fr 1fr; gap:.75rem; }
-  @media (max-width:560px) { .clear-grid { grid-template-columns: 1fr; } }
-  .field-label { color:#7d8590; font-size:.85rem; display:block; margin:0 0 .3rem; }
-  .clear-opt { display:flex; align-items:flex-start; gap:.5rem; margin:.9rem 0 0; font-size:.9rem; color:#e6edf3; cursor:pointer; }
-  .clear-opt input { margin-top:.2rem; accent-color:#9e2f2f; flex:none; }
-  .form-row { display:grid; grid-template-columns: 8rem 1fr; gap:.5rem .75rem; align-items:center; margin: .5rem 0; }
-  .form-row label { color:#7d8590; }
-  .actions { display:flex; gap:.5rem; align-items:center; margin-top:.75rem; }
-  .nav { display:flex; flex-wrap:wrap; gap:1rem; margin:0 0 1.25rem; font-size:.92rem; }
-  .status { font-size:.9rem; }
-  .status.err { color:#f85149; }
-  .status.ok  { color:#3fb950; }
-  button.warn { background:#9e2f2f; }
-  button.warn:hover { background:#b83b3b; }
-  .pill { display:inline-block; background:#21262d; padding:.1em .55em; border-radius:999px; font-size:.78rem; color:#7d8590; }
-  .pill.admin { background:#1f6feb33; color:#79c0ff; }
-  .pill.bad   { background:#f8514922; color:#f85149; }
-  .pill.ok    { background:#3fb95022; color:#3fb950; }
-  .empty { color:#7d8590; padding:.5rem 0; }
-  .arrow { color:#7d8590; padding: 0 .35rem; }
-  hr { border:0; border-top:1px solid #21262d; margin: 2rem 0; }
-</style>
-</head>
-<body>
-  <nav class="nav">
-    <a href="/">&larr; sandbox home</a>
-    <a href="/logs">logs</a>
-  </nav>
-  <div class="tag">${esc(networkName)}</div>
-  <h1>Admin</h1>
-  <p class="muted" style="margin:.25rem 0 1.25rem">
+  const body = `  <p class="dim" style="margin:0 0 16px">
     Sandbox-admin tools. Every action is authorized by an EIP-712 signature from a configured admin wallet — connect one below to unlock them.
   </p>
 
 ${hasAdmins
     ? `  <div class="panel">
     <div class="actions">
-      <button id="connect">Connect wallet</button>
+      <button class="btn btn-primary" id="connect" type="button">Connect wallet</button>
       <span id="wallet" class="mono muted">not connected</span>
       <span id="adminBadge"></span>
     </div>
@@ -127,20 +63,20 @@ ${hasAdmins
   </div>
 
   <div id="adminContent" hidden>
-    <h2>Account impersonation</h2>
+    <h2 class="section-title">Account impersonation</h2>
     <p class="muted" style="margin:.25rem 0 1.25rem">
       A configured <strong>impersonator</strong> key can submit raw transactions that this sandbox executes as its <strong>impersonatee</strong>: <code>msg.sender</code>, gas payer, nonce, and the <code>ecrecover</code> precompile all see the impersonatee. The address that physically signed is recorded on the receipt as <code>signedBy</code> for transparency. Multiple impersonator keys can share a single impersonatee; re-setting an impersonator simply overwrites its target. Map changes only affect future txs — past receipts keep the resolution they had at apply time.
     </p>
 
-    <h3>Current mappings</h3>
+    <h3 class="section-title">Current mappings</h3>
     <div class="panel" id="mappingsPanel">
-      <table id="mappings">
+      <table class="plain" id="mappings">
         <thead><tr><th>impersonator</th><th></th><th>impersonatee</th><th></th></tr></thead>
         <tbody><tr><td colspan="4" class="empty">loading…</td></tr></tbody>
       </table>
     </div>
 
-    <h3>Add mapping</h3>
+    <h3 class="section-title">Add mapping</h3>
     <div class="panel">
       <div class="form-row">
         <label for="newSigner">impersonator</label>
@@ -151,12 +87,12 @@ ${hasAdmins
         <input id="newIdentity" type="text" placeholder="0x… (the identity the EVM will see)">
       </div>
       <div class="actions">
-        <button id="add">Sign & add</button>
+        <button class="btn btn-primary" id="add" type="button">Sign & add</button>
         <span id="status" class="status"></span>
       </div>
     </div>
 
-    <h2>Replace bytecode</h2>
+    <h2 class="section-title">Replace bytecode</h2>
     <p class="muted" style="margin:.25rem 0 1rem">
       Overrides the code at an address with bytecode you supply. Works on any contract — a real one from the upstream chain (the override shadows its on-chain code) or one deployed inside the sandbox. Balance, nonce, and storage are left as-is, so patch a contract in place while keeping its state. Paste <strong>runtime</strong> bytecode (deployed code), not constructor/init code. Leave the box empty (or <code>0x</code>) to strip the code entirely. To put an upstream contract back to its real code, clear that account below.
     </p>
@@ -168,12 +104,12 @@ ${hasAdmins
       <label class="field-label" for="codeHex">runtime bytecode</label>
       <textarea id="codeHex" placeholder="0x60806040… (paste 0x for no code)"></textarea>
       <div class="actions">
-        <button id="setCode">Sign &amp; replace</button>
+        <button class="btn btn-primary" id="setCode" type="button">Sign &amp; replace</button>
         <span id="codeStatus" class="status"></span>
       </div>
     </div>
 
-    <h2>Clear sandbox</h2>
+    <h2 class="section-title">Clear sandbox</h2>
     <p class="muted" style="margin:.25rem 0 1rem">
       Discards sandbox state — overlay balances/nonces/code/storage plus the recorded sandbox transactions — so reads fall back through to the upstream chain. Leave both boxes empty to clear <strong>everything</strong>, or scope it by account: an account is cleared when it's allowed by <em>Only these</em> (blank = all) and not listed under <em>Except these</em>. This is an account-level reset, not a per-tx undo, and it can't be undone.
     </p>
@@ -197,13 +133,13 @@ ${hasAdmins
         <span>Keep EOA balances <span class="muted">— leave an in-scope EOA's balance intact while clearing its nonce, code, storage and txs. Contract accounts are always cleared in full, balance included.</span></span>
       </label>
       <div class="actions">
-        <button id="clear" class="warn">Sign &amp; clear</button>
+        <button id="clear" class="btn btn-warn" type="button">Sign &amp; clear</button>
         <span id="clearStatus" class="status"></span>
       </div>
     </div>
   </div>`
-    : `  <div class="panel" style="border-color:#f8514955">
-    <strong style="color:#f85149">Admin tools are disabled.</strong>
+    : `  <div class="panel" style="border-color:var(--c-danger-border-subtle)">
+    <strong class="err">Admin tools are disabled.</strong>
     <div class="muted" style="margin-top:.4rem">No admins are configured. Add <code>"admins": ["0x..."]</code> to your config file and restart.</div>
   </div>`}
 
@@ -457,7 +393,7 @@ ${hasAdmins
             '<td class="mono">' + toChecksumAddress(signer) + '</td>' +
             '<td class="arrow">→</td>' +
             '<td class="mono">' + toChecksumAddress(identity) + '</td>' +
-            '<td style="text-align:right"><button class="danger" data-signer="' + signer + '">remove</button></td>';
+            '<td style="text-align:right"><button class="btn btn-sm btn-danger-outline danger" data-signer="' + signer + '">remove</button></td>';
           tbody.appendChild(tr);
         }
         tbody.querySelectorAll("button.danger").forEach(btn => {
@@ -677,7 +613,15 @@ ${hasAdmins
         }
       }
     }
-  </script>
-</body>
-</html>`
+  </script>`
+
+  return renderShell({
+    title: 'Admin · Fakereum',
+    heading: 'Admin',
+    networkName,
+    chainId: chainIdDec,
+    symbol: cfg.symbol,
+    active: 'admin',
+    body,
+  })
 }

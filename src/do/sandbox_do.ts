@@ -1019,6 +1019,8 @@ export class EvmSandbox {
         upstreamName: chainName(this.cfg.upstreamChainId),
         upstreamId: this.cfg.upstreamChainId,
         replayGuard: rejectUpstreamSignersEnabled(this.cfg),
+        txs: this.sandbox.allEntries(),
+        accounts: this.overlay.entriesView(),
       }),
     )
   }

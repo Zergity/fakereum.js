@@ -5,7 +5,7 @@
 // the record afterwards. Every interpolated server value goes through esc().
 
 import type { Config } from '../types'
-import { esc, explorerCSS } from './html'
+import { esc, renderShell } from './html'
 import { chainName } from '../lib/chains'
 
 export interface RenderImportPageOptions {
@@ -22,76 +22,35 @@ export function renderImportPage(opts: RenderImportPageOptions): string {
   const upstreamName = chainName(cfg.upstreamChainId)
   const sourceNames = sources.map((s) => esc(s.name)).join(', ')
 
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Import balance · Fakereum</title>
-<style>
-${explorerCSS}
-  :root { color-scheme: dark; }
-  body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; max-width: 760px; margin: 3rem auto; padding: 0 1.25rem; background:#0e1116; color:#e6edf3; }
-  h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
-  h2 { margin: 2rem 0 .75rem; font-size: 1.05rem; color:#e6edf3; }
-  .tag { color:#7d8590; font-size: .85rem; letter-spacing:.05em; text-transform: uppercase; }
-  a { color:#58a6ff; text-decoration:none; }
-  a:hover { text-decoration:underline; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .muted { color:#7d8590; }
-  .panel { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem 1.1rem; }
-  table { width:100%; border-collapse: collapse; }
-  th, td { padding: .55rem .5rem; border-bottom:1px solid #21262d; vertical-align: middle; }
-  th { text-align:left; color:#7d8590; font-weight:500; font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; }
-  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.92rem; }
-  tr:last-child td { border-bottom: 0; }
-  tr.pick { cursor: pointer; }
-  tr.pick:hover td { background:#1c2128; }
-  tr.selected td { background:#1f2a1f; }
-  button { background:#238636; color:#fff; border:0; padding:.5rem .9rem; font: inherit; border-radius:6px; cursor:pointer; }
-  button:hover { background:#2ea043; }
-  button:disabled { background:#30363d; color:#7d8590; cursor:default; }
-  .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
-  #status { color:#7d8590; font-size:.9rem; }
-  .err { color:#f85149; }
-  .ok { color:#3fb950; }
-  .pill { display:inline-block; padding:.05rem .45rem; border-radius:999px; font-size:.75rem; border:1px solid #30363d; color:#7d8590; margin-left:.4rem; }
-  .pill.done { border-color:#238636; color:#3fb950; }
-  pre { background:#0e1116; border:1px solid #30363d; padding:.75rem 1rem; border-radius:6px; overflow-x:auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin:.5rem 0 0; white-space: pre-wrap; }
-</style>
-</head>
-<body>
-  <div class="tag"><a href="/">fakereum sandbox</a> · ${esc(cfg.networkName)}</div>
-  <h1>Import a balance from another chain</h1>
-  <p class="muted">Every account on this sandbox starts with <strong>${esc(multiplier)}×</strong> its native balance on ${esc(upstreamName)} — that part is automatic. If your funds sit on another chain, import them here: the sandbox reads your balance there and credits <strong>${esc(multiplier)}×</strong> that amount in ${esc(cfg.symbol)}. <strong>One import per account</strong>, from one source chain, ever — choose the chain with the balance you want. Sources: ${sourceNames}.</p>
-  <p class="muted">The import is authorized by a <code>personal_sign</code> message; your wallet can be on any network to sign it, and the signature is not a transaction on any chain.</p>
+  const body = `<p class="dim">Every account on this sandbox starts with <strong>${esc(multiplier)}×</strong> its native balance on ${esc(upstreamName)} — that part is automatic. If your funds sit on another chain, import them here: the sandbox reads your balance there and credits <strong>${esc(multiplier)}×</strong> that amount in ${esc(cfg.symbol)}. <strong>One import per account</strong>, from one source chain, ever — choose the chain with the balance you want. Sources: ${sourceNames}.</p>
+  <p class="dim">The import is authorized by a <code>personal_sign</code> message; your wallet can be on any network to sign it, and the signature is not a transaction on any chain.</p>
 
   <div class="row" style="margin:1.25rem 0">
-    <button id="connect">Connect wallet</button>
+    <button class="btn btn-primary" id="connect" type="button">Connect wallet</button>
     <span id="wallet" class="mono muted">not connected</span>
     <span id="status"></span>
   </div>
 
   <div id="content" hidden>
     <div id="donePanel" class="panel" hidden>
-      <div class="tag">imported <span class="pill done">done</span></div>
+      <div class="cap">imported <span class="pill done">done</span></div>
       <p id="doneText" style="margin:.5rem 0 0"></p>
     </div>
 
     <div id="pickPanel" hidden>
-      <h2>Your balances on the source chains</h2>
+      <h2 class="section-title">Your balances on the source chains</h2>
       <div class="panel">
-        <table>
+        <table class="plain">
           <thead><tr><th></th><th>Chain</th><th>Balance there</th><th>You would get here</th></tr></thead>
           <tbody id="rows"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
         </table>
       </div>
       <div class="row" style="margin-top:1rem">
-        <button id="import" disabled>Import selected</button>
+        <button class="btn btn-primary" id="import" type="button" disabled>Import selected</button>
         <span class="muted" id="hint">select a chain with a non-zero balance</span>
       </div>
       <div id="msgWrap" hidden>
-        <div class="tag" style="margin-top:1rem">message to sign</div>
+        <div class="cap" style="margin-top:16px">message to sign</div>
         <pre id="msg"></pre>
       </div>
     </div>
@@ -215,8 +174,16 @@ ${explorerCSS}
         window.ethereum.on("accountsChanged", (a) => setAccount((a && a[0]) || null));
       }
     }
-  </script>
-</body>
-</html>
-`
+  </script>`
+
+  return renderShell({
+    title: 'Import balance · Fakereum',
+    heading: 'Import a balance from another chain',
+    networkName: cfg.networkName,
+    chainId: cfg.chainId.toString(),
+    symbol: cfg.symbol,
+    active: 'import',
+    body,
+  })
 }
+
