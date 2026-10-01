@@ -34,6 +34,7 @@ const CLEAR_TYPE_HASH = keccak256(
   utf8('ClearSandbox(address[] include,address[] exclude,bool keepNonzeroNonce,bool keepBalances)'),
 )
 const SET_CODE_TYPE_HASH = keccak256(utf8('SetCode(address account,bytes code)'))
+const SET_UI_MODE_TYPE_HASH = keccak256(utf8('SetUiMode(bool upstream)'))
 
 /** 32-byte big-endian encoding of a uint256. */
 function uint256To32(n: bigint): Uint8Array {
@@ -75,6 +76,12 @@ export function setImpersonatorDigest(chainId: bigint, impersonator: Hex, impers
   const structHash = keccak256(
     concatBytes(SET_IMP_TYPE_HASH, addressTo32(impersonator), addressTo32(impersonatee)),
   )
+  return digest(chainId, structHash)
+}
+
+/** Digest for the admin explorer-appearance toggle: SetUiMode(bool upstream). */
+export function setUiModeDigest(chainId: bigint, upstream: boolean): Hex {
+  const structHash = keccak256(concatBytes(SET_UI_MODE_TYPE_HASH, uint256To32(upstream ? 1n : 0n)))
   return digest(chainId, structHash)
 }
 

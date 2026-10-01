@@ -20,6 +20,8 @@ export interface Env {
   ETH_CALL_STORAGE_MODE?: string
   CACHE_TTL?: string
   REJECT_UPSTREAM_SIGNERS?: string
+  /** "upstream" = explorer pages present themselves as the upstream chain (name, chain id, symbol; no sandbox branding). */
+  UI_MODE?: string
   ADMINS?: string
   IMPERSONATE?: string
   CORS_ORIGINS?: string
@@ -61,6 +63,8 @@ export interface Config {
   cacheTtlMs: number
   /** null = auto (on iff chainId === upstreamChainId). */
   rejectUpstreamSigners: boolean | null
+  /** UI_MODE=upstream: explorer pages show the upstream chain's identity and no sandbox branding. */
+  uiUpstream?: boolean
   admins: Hex[]
   /** Seed pairs [impersonator B, impersonatee A]. */
   impersonateSeed: Array<[Hex, Hex]>

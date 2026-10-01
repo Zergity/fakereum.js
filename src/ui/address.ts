@@ -12,7 +12,7 @@ import { addrEq, addrKey, checksumAddress, toBigInt } from '../lib/hex'
 import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
 import { chainName } from '../lib/chains'
-import { deployLabel, esc, renderShell } from './html'
+import { deployLabel, esc, identity, renderShell } from './html'
 
 export interface RenderAddressOptions {
   address: Hex
@@ -41,7 +41,7 @@ interface TxRow {
   gasUsed: string
 }
 
-const SANDBOX_PILL = '<span class="badge sandbox">sandbox</span>'
+const SANDBOX_PILL = '<span class="badge local">sandbox</span>'
 
 /** code 0x-hex (empty / "0x" means EOA). */
 function codeBytesLen(code: Hex | undefined): number {
@@ -52,6 +52,9 @@ function codeBytesLen(code: Hex | undefined): number {
 
 export function renderAddressPage(opts: RenderAddressOptions): string {
   const { cfg, overlay, upstream, txs, explorer, baseURL } = opts
+  const id = identity(cfg)
+  const wl = id.whitelabel
+  const PILL = wl ? '' : SANDBOX_PILL
   const address = checksumAddress(opts.address)
 
   // --- effective account: overlay wins per-field, else upstream@latest ------
@@ -128,9 +131,9 @@ export function renderAddressPage(opts: RenderAddressOptions): string {
   const row = (k: string, v: string) => `      <dl class="kv"><dt>${k}:</dt><dd>${v}</dd></dl>\n`
   const parts: string[] = []
 
-  parts.push(`  <div class="card"><div class="hd">Overview ${isContract ? '<span class="badge">Contract</span>' : '<span class="badge">EOA</span>'}${hasOverlay ? SANDBOX_PILL : ''}${selfDestructed ? '<span class="badge err">self-destructed</span>' : ''}</div>
+  parts.push(`  <div class="card"><div class="hd">Overview ${isContract ? '<span class="badge">Contract</span>' : '<span class="badge">EOA</span>'}${hasOverlay ? PILL : ''}${selfDestructed ? '<span class="badge err">self-destructed</span>' : ''}</div>
     <div class="bd">
-${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? ' ' + SANDBOX_PILL : upstreamScaleNote}`)}${row('Nonce', `${esc(nonce)}${nonceSet ? ' ' + SANDBOX_PILL : ''}`)}${row('Code size', `${esc(codeSize.toString())} bytes${codeSet ? ' ' + SANDBOX_PILL : ''}`)}${row(
+${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? ' ' + PILL : wl ? '' : upstreamScaleNote}`)}${row('Nonce', `${esc(nonce)}${nonceSet ? ' ' + PILL : ''}`)}${row('Code size', `${esc(codeSize.toString())} bytes${codeSet ? ' ' + PILL : ''}`)}${wl ? '' : row(
     'View on',
     `<a href="${esc(explorerURL)}" rel="noopener noreferrer">${esc(explorer.name)} &rarr;</a> <span class="muted">(${esc(upstreamName)}${upstreamId ? ' · id ' + esc(upstreamId.toString()) : ''})</span>`,
   )}    </div>
@@ -152,7 +155,7 @@ ${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? '
       )
       .join('')
     parts.push(`  <div class="card">
-    <div class="hd">Sandbox transactions <span class="muted">(${esc(txRows.length.toString())})</span></div>
+    <div class="hd">${wl ? 'Transactions' : 'Sandbox transactions'} <span class="muted">(${esc(txRows.length.toString())})</span></div>
     <div class="tablewrap"><table class="list">
       <thead><tr><th>Txn hash</th><th>Block</th><th>Role</th><th>Status</th><th class="num">Gas used</th></tr></thead>
       <tbody>${rows}
@@ -161,12 +164,12 @@ ${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? '
   </div>
 `)
   } else {
-    parts.push(`  <div class="card"><div class="hd">Sandbox transactions</div><div class="empty">No sandbox transactions touch this address.</div></div>
+    parts.push(`  <div class="card"><div class="hd">${wl ? 'Transactions' : 'Sandbox transactions'}</div><div class="empty">No ${wl ? '' : 'sandbox '}transactions touch this address.</div></div>
 `)
   }
 
   // --- overlay storage ------------------------------------------------------
-  if (storageRows.length > 0) {
+  if (storageRows.length > 0 && !wl) {
     const rows = storageRows
       .map((s) => `<tr><td class="wrap mono">${esc(s.key)}</td><td class="wrap mono">${esc(s.value)}</td></tr>`)
       .join('')
@@ -192,12 +195,10 @@ ${row('Balance', `${esc(balance)} <span class="muted">wei</span>${balanceSet ? '
   }
 
   return renderShell({
-    title: `Sandbox address ${address.slice(0, 10)}…`,
+    title: wl ? `Address ${address.slice(0, 10)}…` : `Sandbox address ${address.slice(0, 10)}…`,
     heading: isContract ? 'Contract' : 'Address',
     sub: address,
-    symbol: cfg.symbol,
-    networkName: cfg.networkName,
-    chainId: cfg.chainId.toString(),
+    ...id,
     baseURL,
     body: parts.join(''),
   })

@@ -53,6 +53,7 @@ import {
   rpcRemoveImpersonator,
   rpcSetCode,
   rpcSetImpersonator,
+  rpcSetUiMode,
   type ClearCounts,
 } from '../impersonate/admin_rpc'
 import { parseStateOverrides } from '../state_override'
@@ -181,6 +182,10 @@ export class EvmSandbox {
 
     const importRows = await storage.list<ImportRecord>({ prefix: 'import:' })
     for (const [key, rec] of importRows) this.imports.set(key.slice('import:'.length), rec)
+
+    // Admin-set appearance wins over the UI_MODE env default.
+    const uiUpstream = await storage.get<boolean>('ui:upstream')
+    if (uiUpstream !== undefined) this.cfg.uiUpstream = uiUpstream
 
     const impMap = await storage.get<{ map: Record<string, string> }>('impersonators')
     this.impersonators.loadJSON(impMap?.map)
@@ -320,6 +325,8 @@ export class EvmSandbox {
         resp = this.serveAccountList(baseURL)
       } else if (path.startsWith('/undo/') && request.method === 'POST') {
         resp = await this.serveUndo(path.slice('/undo/'.length), request)
+      } else if (path === '/import' && this.cfg.uiUpstream) {
+        resp = new Response('not found', { status: 404 })
       } else if (path === '/admin') {
         resp = this.serveAdmin(baseURL, origin)
       } else if (path === '/import') {
@@ -472,6 +479,11 @@ export class EvmSandbox {
         return rpcSetImpersonator(req, this.cfg, this.impersonators, () => this.persistImpersonators())
       case 'fakereum_removeImpersonator':
         return rpcRemoveImpersonator(req, this.cfg, this.impersonators, () => this.persistImpersonators())
+      case 'fakereum_setUiMode':
+        return rpcSetUiMode(req, this.cfg, async (upstream) => {
+          this.cfg.uiUpstream = upstream
+          await this.ctx.storage.put('ui:upstream', upstream)
+        })
       case 'fakereum_setCode':
         return rpcSetCode(req, this.cfg, (account, code) => this.doSetCode(account, code))
       default:

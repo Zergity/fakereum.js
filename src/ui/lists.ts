@@ -9,7 +9,7 @@ import type { Config, DeployMethod, OverlayAccount, StoredTx } from '../types'
 import { type Hex, addrKey, checksumAddress, strip0x, toBigInt } from '../lib/hex'
 import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
-import { deployLabel, esc, formatAbsUTC, humanizeAgo, renderShell } from './html'
+import { deployLabel, esc, formatAbsUTC, humanizeAgo, identity, renderShell } from './html'
 
 // Go's `{{slice .Hash 0 n}}…`: take the first n characters then append an
 // ellipsis. Operates on the already-checksummed hex string.
@@ -75,6 +75,8 @@ interface TxListRow {
 
 export function renderTxList(opts: RenderTxListOpts): string {
   const { txs, cfg } = opts
+  const id = identity(cfg)
+  const wl = id.whitelabel
   const now = Math.floor(Date.now() / 1000)
 
   // newest first: StoredTx.seq is monotonic (higher = newer).
@@ -136,13 +138,13 @@ export function renderTxList(opts: RenderTxListOpts): string {
   if (rows.length > 0) {
     body += `  <div class="card">
     <div class="hd">
-      <span>${rows.length} sandbox transaction${rows.length === 1 ? '' : 's'} found</span>
-      <form method="post" action="/undo/last" class="push">
+      <span>${rows.length} ${wl ? '' : 'sandbox '}transaction${rows.length === 1 ? '' : 's'} found</span>
+      ${wl ? '' : `<form method="post" action="/undo/last" class="push">
         <button type="submit" class="btn btn-undo btn-sm">Undo last tx</button>
-      </form>
+      </form>`}
     </div>
     <div class="tablewrap"><table class="list">
-      <thead><tr><th>Txn hash</th><th>Block</th><th>Age</th><th>From</th><th></th><th>To</th><th>Status</th><th class="num">Gas used</th><th></th></tr></thead>
+      <thead><tr><th>Txn hash</th><th>Block</th><th>Age</th><th>From</th><th></th><th>To</th><th>Status</th><th class="num">Gas used</th>${wl ? '' : '<th></th>'}</tr></thead>
       <tbody>
 `
     for (const r of rows) {
@@ -163,28 +165,26 @@ export function renderTxList(opts: RenderTxListOpts): string {
           ${toCell}
           ${statusCell}
           <td class="num">${esc(r.gasUsed.toString())}</td>
-          <td><form method="post" action="/undo/${esc(r.hash)}" style="display:inline;" onsubmit="return confirm('Undo this tx and everything after it?');"><button type="submit" class="btn btn-undo btn-sm" title="Undo back to here">&#8630;</button></form></td>
+          ${wl ? '' : `<td><form method="post" action="/undo/${esc(r.hash)}" style="display:inline;" onsubmit="return confirm('Undo this tx and everything after it?');"><button type="submit" class="btn btn-undo btn-sm" title="Undo back to here">&#8630;</button></form></td>`}
         </tr>
 `
     }
     body += `      </tbody>
     </table></div>
   </div>
-  <p class="muted">The &#8630; button undoes the sandbox back to, and including, that transaction.</p>
+  ${wl ? '' : '<p class="muted">The &#8630; button undoes the sandbox back to, and including, that transaction.</p>'}
 `
   } else {
-    body += `  <div class="card"><div class="empty">No sandbox transactions yet. Send one via <code>eth_sendRawTransaction</code> to populate this list.</div></div>
+    body += `  <div class="card"><div class="empty">${wl ? 'No transactions yet.' : 'No sandbox transactions yet. Send one via <code>eth_sendRawTransaction</code> to populate this list.'}</div></div>
 `
   }
 
   return renderShell({
-    title: `Sandbox transactions · ${networkName}`,
+    title: wl ? `Transactions · ${id.networkName}` : `Sandbox transactions · ${networkName}`,
     heading: 'Transactions',
-    sub: 'sandbox only, newest first',
-    networkName,
-    chainId: chainID,
+    sub: wl ? undefined : 'sandbox only, newest first',
+    ...id,
     active: 'txs',
-    symbol: cfg.symbol,
     baseURL: opts.baseURL,
     body,
   })
@@ -215,6 +215,8 @@ interface AccountListRow {
 
 export function renderAccountList(opts: RenderAccountListOpts): string {
   const { accounts, cfg } = opts
+  const id = identity(cfg)
+  const wl = id.whitelabel
 
   const rows: AccountListRow[] = accounts.map(({ address, acct }) => {
     const addr = checksumAddress(address)
@@ -244,12 +246,14 @@ export function renderAccountList(opts: RenderAccountListOpts): string {
   const networkName = cfg.networkName
   const chainID = cfg.chainId.toString()
 
-  let body = `  <p class="muted">Every address whose balance, nonce, code or storage has been touched in the sandbox (overlay state). Reads for addresses not listed here fall through to upstream.</p>
+  let body = wl
+    ? ''
+    : `  <p class="muted">Every address whose balance, nonce, code or storage has been touched in the sandbox (overlay state). Reads for addresses not listed here fall through to upstream.</p>
 `
 
   if (rows.length > 0) {
     body += `  <div class="card">
-    <div class="hd">${rows.length} sandbox account${rows.length === 1 ? '' : 's'} found</div>
+    <div class="hd">${rows.length} ${wl ? '' : 'sandbox '}account${rows.length === 1 ? '' : 's'} found</div>
     <div class="tablewrap"><table class="list">
       <thead><tr><th>Address</th><th class="num">Balance (wei)</th><th class="num">Nonce</th><th class="num">Code</th><th class="num">Slots</th><th></th></tr></thead>
       <tbody>
@@ -275,18 +279,16 @@ export function renderAccountList(opts: RenderAccountListOpts): string {
   </div>
 `
   } else {
-    body += `  <div class="card"><div class="empty">No sandbox accounts yet. They appear here when a sandbox tx (or <code>--genesis</code> seed) writes to balance, nonce, code, or storage.</div></div>
+    body += `  <div class="card"><div class="empty">${wl ? 'No accounts yet.' : 'No sandbox accounts yet. They appear here when a sandbox tx (or <code>--genesis</code> seed) writes to balance, nonce, code, or storage.'}</div></div>
 `
   }
 
   return renderShell({
-    title: `Sandbox accounts · ${networkName}`,
+    title: wl ? `Accounts · ${id.networkName}` : `Sandbox accounts · ${networkName}`,
     heading: 'Accounts',
-    sub: 'overlay state',
-    networkName,
-    chainId: chainID,
+    sub: wl ? undefined : 'overlay state',
+    ...id,
     active: 'accounts',
-    symbol: cfg.symbol,
     baseURL: opts.baseURL,
     body,
   })

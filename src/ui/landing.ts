@@ -9,7 +9,7 @@
 
 import type { Config, OverlayAccount, StoredTx } from '../types'
 import { checksumAddress, strip0x, toBigInt, type Hex } from '../lib/hex'
-import { esc, humanizeAgo, renderShell } from './html'
+import { esc, humanizeAgo, identity, renderShell } from './html'
 import { INFOS_SENTINEL } from '../infos'
 import { importSources } from '../import_balance'
 
@@ -71,10 +71,12 @@ function jsString(s: string): string {
 export function renderLanding(opts: RenderLandingOpts): string {
   const { cfg, upstreams, upstreamName, upstreamId, upstreamError, replayGuard, txs, accounts } = opts
 
-  const chainIdDec = cfg.chainId.toString()
-  const chainIdHex = '0x' + cfg.chainId.toString(16)
-  const networkName = cfg.networkName
-  const symbol = cfg.symbol
+  const id = identity(cfg)
+  const wl = id.whitelabel
+  const chainIdDec = id.chainId
+  const chainIdHex = '0x' + BigInt(id.chainId).toString(16)
+  const networkName = id.networkName
+  const symbol = id.symbol
   const failoverCount = Math.max(0, upstreams.length - 1)
 
   const upstream0 = upstreams[0] ?? ''
@@ -128,7 +130,7 @@ export function renderLanding(opts: RenderLandingOpts): string {
   // Gas used by the last 14 sandbox txs, oldest first.
   const series = newestTxs.slice(0, 14).reverse().map((t) => Number(toBigInt(t.gasUsed)))
   const kfmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n))
-  let chart = '<div class="muted" style="margin-top:12px">Needs at least two sandbox transactions.</div>'
+  let chart = '<div class="muted" style="margin-top:12px">Needs at least two transactions.</div>'
   if (series.length >= 2) {
     const hi = Math.max(...series), lo = Math.min(...series), span = hi - lo || 1
     const pts = series.map((v, i) => `${((i / (series.length - 1)) * 300).toFixed(1)},${(52 - ((v - lo) / span) * 48).toFixed(1)}`).join(' ')
@@ -142,14 +144,14 @@ export function renderLanding(opts: RenderLandingOpts): string {
   const statsCard = `  <div class="card stats">
     <div>
       ${item(iGlobe, 'Network name', esc(networkName))}
-      ${item(iCoin, 'Upstream chain', `${esc(upstreamName)}${upstreamIdSuffix}`)}
+      ${wl ? item(iGauge, 'Chain ID', `${esc(chainIdDec)} <span class="muted">(${esc(chainIdHex)})</span>`) : item(iCoin, 'Upstream chain', `${esc(upstreamName)}${upstreamIdSuffix}`)}
     </div>
     <div>
-      ${pair(iStack, 'Sandbox transactions', esc(txs.length.toLocaleString('en-US')), 'Sandbox accounts', esc(accounts.length.toLocaleString('en-US')))}
-      ${pair(iGauge, 'Chain ID', `${esc(chainIdDec)} <span class="muted">(${esc(chainIdHex)})</span>`, 'Currency', esc(symbol))}
+      ${pair(iStack, wl ? 'Transactions' : 'Sandbox transactions', esc(txs.length.toLocaleString('en-US')), wl ? 'Accounts' : 'Sandbox accounts', esc(accounts.length.toLocaleString('en-US')))}
+      ${wl ? item(iCoin, 'Currency', esc(symbol)) : pair(iGauge, 'Chain ID', `${esc(chainIdDec)} <span class="muted">(${esc(chainIdHex)})</span>`, 'Currency', esc(symbol))}
     </div>
     <div>
-      <div class="cap">Gas used, last ${series.length || 14} sandbox txs</div>
+      <div class="cap">Gas used, last ${series.length || 14} ${wl ? '' : 'sandbox '}txs</div>
       ${chart}
     </div>
   </div>
@@ -176,7 +178,7 @@ export function renderLanding(opts: RenderLandingOpts): string {
       const slots = acct.storage ? Object.keys(acct.storage).length : 0
       return `<div class="list-row"><div class="icon-tile">${isContract ? iCube : iUser}</div>
           <div class="t"><a class="truncate" href="/address/${esc(a)}">${esc(short(a))}</a><div class="muted">${isContract ? 'Contract' : 'EOA'}</div></div>
-          <div>Nonce ${acct.nonce != null ? esc(toBigInt(acct.nonce).toString()) : '<span class="muted">—</span>'}<div class="muted">${acct.selfDestructed ? 'self-destructed' : 'sandbox overlay'}</div></div>
+          <div>Nonce ${acct.nonce != null ? esc(toBigInt(acct.nonce).toString()) : '<span class="muted">—</span>'}<div class="muted">${acct.selfDestructed ? 'self-destructed' : wl ? '&nbsp;' : 'sandbox overlay'}</div></div>
           ${pill(slots + (slots === 1 ? ' slot' : ' slots'))}</div>`
     })
     .join('\n        ')
@@ -185,19 +187,31 @@ export function renderLanding(opts: RenderLandingOpts): string {
     <div class="card">
       <div class="card-header"><h2>Latest Transactions</h2><a class="btn btn-white btn-sm" href="/txs">View all</a></div>
       <div class="card-body">
-        ${txRows || emptyRow('No sandbox transactions yet.')}
+        ${txRows || emptyRow(wl ? 'No transactions yet.' : 'No sandbox transactions yet.')}
       </div>
       <div class="card-footer"><a href="/txs">View all transactions →</a></div>
     </div>
     <div class="card">
       <div class="card-header"><h2>Latest Accounts</h2><a class="btn btn-white btn-sm" href="/accounts">View all</a></div>
       <div class="card-body">
-        ${acctRows || emptyRow('No sandbox accounts yet.')}
+        ${acctRows || emptyRow(wl ? 'No accounts yet.' : 'No sandbox accounts yet.')}
       </div>
       <div class="card-footer"><a href="/accounts">View all accounts →</a></div>
     </div>
   </div>
 `
+
+  if (wl) {
+    return renderShell({
+      title: `${networkName} Explorer`,
+      heading: `${networkName} Explorer`,
+      ...id,
+      active: 'home',
+      whitelabel: true,
+      tallHero: true,
+      body: `${statsCard}\n${latest}`,
+    })
+  }
 
   const exploreRow = (icon: string, href: string, title: string, desc: string, ext = false) =>
     `<div class="list-row" style="grid-template-columns:48px 1fr"><div class="icon-tile">${icon}</div><div class="t"><a class="title" href="${href}"${ext ? ' target="_blank" rel="noopener noreferrer"' : ''}>${title}</a><div class="muted">${desc}</div></div></div>`
@@ -335,9 +349,7 @@ Data: 0x12345678 and 68 bytes with hash 0x…   (only if data non-empty; tail on
   return renderShell({
     title: 'Fakereum sandbox',
     heading: 'Forked EVM sandbox',
-    networkName,
-    chainId: chainIdDec,
-    symbol,
+    ...id,
     active: 'home',
     tallHero: true,
     body,

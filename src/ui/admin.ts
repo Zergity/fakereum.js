@@ -17,7 +17,12 @@
 //   RemoveImpersonator(address impersonator)
 
 import type { Config, ReqContext } from '../types'
-import { esc, renderShell } from './html'
+import { esc, identity, renderShell } from './html'
+
+/** JSON string literal that is safe inside an inline <script>. */
+function scriptString(s: string): string {
+  return JSON.stringify(s).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
+}
 
 export interface RenderAdminPageOptions {
   cfg: Config
@@ -35,6 +40,8 @@ export interface RenderAdminPageOptions {
  */
 export function renderAdminPage(opts: RenderAdminPageOptions): string {
   const { cfg, hasAdmins } = opts
+  const id = identity(cfg)
+  const wl = id.whitelabel
 
   const chainIdDec = cfg.chainId.toString(10)
   const chainIdHex = '0x' + cfg.chainId.toString(16)
@@ -92,6 +99,21 @@ ${hasAdmins
       </div>
     </div>
 
+    <h2 class="section-title">Explorer appearance</h2>
+    <p class="muted" style="margin:.25rem 0 1rem">
+      Controls how the explorer pages present themselves. With the option on, they show the <strong>upstream</strong> chain's name, chain id and native symbol, drop the Fakereum branding, sandbox wording and controls, and hide the Tools / API menus and the <code>/import</code> page. This page stays reachable at <code>/admin</code>. RPC responses and discovery are not affected.
+    </p>
+    <div class="panel">
+      <label class="clear-opt" for="uiUpstream" style="margin-top:0">
+        <input type="checkbox" id="uiUpstream">
+        <span>Present as the upstream network <span class="muted">— no custom chain id, symbol or Fakereum branding on the explorer pages.</span></span>
+      </label>
+      <div class="actions">
+        <button id="uiSave" class="btn btn-primary" type="button">Sign &amp; save</button>
+        <span id="uiStatus" class="status"></span>
+      </div>
+    </div>
+
     <h2 class="section-title">Replace bytecode</h2>
     <p class="muted" style="margin:.25rem 0 1rem">
       Overrides the code at an address with bytecode you supply. Works on any contract — a real one from the upstream chain (the override shadows its on-chain code) or one deployed inside the sandbox. Balance, nonce, and storage are left as-is, so patch a contract in place while keeping its state. Paste <strong>runtime</strong> bytecode (deployed code), not constructor/init code. Leave the box empty (or <code>0x</code>) to strip the code entirely. To put an upstream contract back to its real code, clear that account below.
@@ -146,6 +168,8 @@ ${hasAdmins
   <script>
     const chainIdHex = "${esc(chainIdHex)}";
     const chainIdDec = ${chainIdDec};
+    const sandboxName = ${scriptString(cfg.networkName)};
+    const sandboxSymbol = ${scriptString(cfg.symbol)};
     const rpcUrl = window.location.origin + "/rpc";
     const adminSet = new Set([${adminSetLiteral}].map(s => s.toLowerCase()));
 
@@ -361,8 +385,32 @@ ${hasAdmins
       };
     }
 
+    // eth_signTypedData_v4 refuses a domain whose chainId differs from the
+    // wallet's active network, so move the wallet onto the sandbox network (add
+    // it first when the wallet has never seen it) before asking for a signature.
+    async function ensureChain() {
+      const cur = await window.ethereum.request({method: "eth_chainId"});
+      if (BigInt(cur) === BigInt(chainIdHex)) return;
+      try {
+        await window.ethereum.request({method: "wallet_switchEthereumChain", params: [{chainId: chainIdHex}]});
+      } catch (e) {
+        const code = e && (e.code !== undefined ? e.code : (e.data && e.data.originalError && e.data.originalError.code));
+        if (code !== 4902 && !/unrecognized chain|not been added/i.test((e && e.message) || "")) throw e;
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: chainIdHex,
+            chainName: sandboxName,
+            rpcUrls: [rpcUrl],
+            nativeCurrency: { name: sandboxName, symbol: sandboxSymbol, decimals: 18 },
+          }],
+        });
+      }
+    }
+
     async function signTyped(payload) {
       if (!currentAddr) throw new Error("connect wallet first");
+      await ensureChain();
       return await window.ethereum.request({
         method: "eth_signTypedData_v4",
         params: [currentAddr, JSON.stringify(payload)],
@@ -529,6 +577,46 @@ ${hasAdmins
       }
     }
 
+    // --- Explorer appearance ----------------------------------------------------
+    // Signed EIP-712 SetUiMode(bool upstream); the server persists the flag.
+    function setUiStatus(msg, kind) {
+      const el = $("uiStatus"); if (!el) return;
+      el.textContent = msg || "";
+      el.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function setUiModePayload(upstream) {
+      return {
+        domain: eip712Domain(),
+        types: {
+          EIP712Domain: [
+            {name:"name",    type:"string"},
+            {name:"version", type:"string"},
+            {name:"chainId", type:"uint256"},
+          ],
+          SetUiMode: [
+            {name:"upstream", type:"bool"},
+          ],
+        },
+        primaryType: "SetUiMode",
+        message: { upstream },
+      };
+    }
+
+    async function saveUiMode() {
+      if (!currentAddr) { setUiStatus("connect an admin wallet first", "err"); return; }
+      const upstream = $("uiUpstream").checked;
+      try {
+        setUiStatus("waiting for wallet signature…");
+        const sig = await signTyped(setUiModePayload(upstream));
+        setUiStatus("submitting…");
+        const r = await rpc("fakereum_setUiMode", [{upstream, signature: sig}]);
+        setUiStatus(r.upstream ? "saved: explorer pages now present as the upstream network" : "saved: explorer pages show the sandbox identity", "ok");
+      } catch (e) {
+        setUiStatus(e.message || String(e), "err");
+      }
+    }
+
     // --- Replace bytecode -----------------------------------------------------
     // Admin-gated like the others: the (account, code) pair is signed EIP-712
     // over the SetCode type and verified server-side against cfg.Admins. code is
@@ -592,6 +680,8 @@ ${hasAdmins
       $("connect").addEventListener("click", connect);
       $("add").addEventListener("click", addMapping);
       $("setCode").addEventListener("click", replaceCode);
+      $("uiUpstream").checked = ${cfg.uiUpstream ? 'true' : 'false'};
+      $("uiSave").addEventListener("click", saveUiMode);
       $("clear").addEventListener("click", clearSandbox);
       $("clearInclude").addEventListener("input", saveClearInputs);
       $("clearExclude").addEventListener("input", saveClearInputs);
@@ -616,11 +706,9 @@ ${hasAdmins
   </script>`
 
   return renderShell({
-    title: 'Admin · Fakereum',
+    title: wl ? 'Admin' : 'Admin · Fakereum',
     heading: 'Admin',
-    networkName,
-    chainId: chainIdDec,
-    symbol: cfg.symbol,
+    ...id,
     active: 'admin',
     body,
   })

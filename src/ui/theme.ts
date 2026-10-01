@@ -356,7 +356,7 @@ a:hover { color: var(--c-link-hover); }
 }
 
 /* =====================================================================
-   Additions on top of the handoff: the page markup the sandbox needs that
+   Additions on top of the handoff: the page markup that
    the reference does not show (forms, code blocks, tabs, log items). Only
    tokens are used, no new colors except where noted.
    ===================================================================== */
@@ -435,7 +435,7 @@ p.dim, .dim { color: var(--c-text-muted); }
 .badge.err { background: var(--c-danger-subtle); border-color: var(--c-danger-border-subtle); color: var(--c-danger); }
 .badge.warn { background: var(--c-warning-subtle); border-color: var(--c-warning-border-subtle); color: #997404; }
 .badge.deploy { background: var(--c-success-subtle); border-color: var(--c-success-border-subtle); color: var(--c-success); }
-.badge.sandbox { background: var(--c-primary-subtle); border-color: var(--c-primary-border-subtle); color: var(--c-primary); }
+.badge.local { background: var(--c-primary-subtle); border-color: var(--c-primary-border-subtle); color: var(--c-primary); }
 .pill { display: inline-block; font-size: var(--fs-2xs); font-weight: var(--fw-bold); line-height: 1; padding: 6px 8px; border-radius: var(--r-sm); background: var(--c-surface-2); border: 1px solid var(--c-border); color: var(--c-text-strong); }
 .pill.admin { background: var(--c-primary-subtle); border-color: var(--c-primary-border-subtle); color: var(--c-primary); }
 .pill.bad { background: var(--c-danger-subtle); border-color: var(--c-danger-border-subtle); color: var(--c-danger); }

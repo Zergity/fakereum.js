@@ -88,6 +88,7 @@ export function loadConfig(env: Env): Config {
     ethCallStorageMode,
     cacheTtlMs: Number.isFinite(ttlSec) ? Math.max(0, ttlSec) * 1000 : 12_000,
     rejectUpstreamSigners: parseRejectSigners(env.REJECT_UPSTREAM_SIGNERS),
+    uiUpstream: (env.UI_MODE || '').trim().toLowerCase() === 'upstream',
     admins: splitCSV(env.ADMINS).map(toAddress),
     impersonateSeed: parseImpersonateSeed(env.IMPERSONATE),
     corsOrigins: splitCSV(env.CORS_ORIGINS),

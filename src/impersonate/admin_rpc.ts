@@ -20,6 +20,7 @@ import {
   removeImpersonatorDigest,
   setCodeDigest,
   setImpersonatorDigest,
+  setUiModeDigest,
 } from '../lib/eip712'
 import type { Impersonators } from './store'
 
@@ -129,6 +130,35 @@ export async function rpcSetCode(
     if (!isAdmin(cfg, signer)) return makeError(req.id, ERR_SERVER, `signer ${signer} is not an admin`)
     await setCodeFn(account, code)
     return makeResult(req.id, { account: checksumAddress(account), codeSize: code.length })
+  } catch (e) {
+    return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
+  }
+}
+
+/**
+ * fakereum_setUiMode [{upstream: bool, signature}]: switch the explorer pages
+ * between the sandbox identity and the upstream chain's identity. The flag is
+ * part of the signed scope (exact-true only), and persisting it is injected.
+ */
+export async function rpcSetUiMode(
+  req: RpcRequest,
+  cfg: Config,
+  setFn: (upstream: boolean) => Promise<void>,
+): Promise<RpcResponse> {
+  if (cfg.admins.length === 0) {
+    return makeError(req.id, ERR_METHOD_NOT_FOUND, 'ui mode is not enabled (no admins configured)')
+  }
+  const p = firstParam(req)
+  if (!p || typeof p['signature'] !== 'string' || typeof p['upstream'] !== 'boolean') {
+    return makeError(req.id, ERR_INVALID_PARAMS, 'expected [{upstream:bool, signature}]')
+  }
+  const upstream = p['upstream'] === true
+  try {
+    const digest = setUiModeDigest(cfg.chainId, upstream)
+    const signer = await recoverEIP712Signer(digest, p['signature'] as Hex)
+    if (!isAdmin(cfg, signer)) return makeError(req.id, ERR_SERVER, `signer ${signer} is not an admin`)
+    await setFn(upstream)
+    return makeResult(req.id, { upstream })
   } catch (e) {
     return makeError(req.id, ERR_SERVER, String((e as Error).message ?? e))
   }

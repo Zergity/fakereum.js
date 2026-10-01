@@ -1,3 +1,5 @@
+import type { Config } from '../types'
+import { chainName, upstreamNativeSymbol } from '../lib/chains'
 import { themeCSS } from './theme'
 
 // Shared server-side HTML rendering toolkit for the explorer/admin/landing
@@ -43,6 +45,21 @@ export function htmlResponse(body: string, status = 200): Response {
 // handoff tokens + components).
 // --------------------------------------------------------------------------
 
+/**
+ * Identity the pages show for the network. With UI_MODE=upstream this is the
+ * upstream chain's own name, chain id and native symbol, and `whitelabel` is
+ * true so pages drop sandbox wording and controls.
+ */
+export function identity(cfg: Config): { networkName: string; chainId: string; symbol: string; whitelabel: boolean } {
+  if (!cfg.uiUpstream) return { networkName: cfg.networkName, chainId: cfg.chainId.toString(), symbol: cfg.symbol, whitelabel: false }
+  return {
+    networkName: chainName(cfg.upstreamChainId),
+    chainId: cfg.upstreamChainId.toString(),
+    symbol: upstreamNativeSymbol(cfg.upstreamChainId),
+    whitelabel: true,
+  }
+}
+
 export type NavTab = 'home' | 'txs' | 'accounts' | 'import' | 'admin' | ''
 
 export interface ShellOpts {
@@ -57,6 +74,8 @@ export interface ShellOpts {
   active?: NavTab
   /** Prefix for in-app links; '' when served from the root. */
   baseURL?: string
+  /** UI_MODE=upstream: no Fakereum name, admin/tools links or sandbox footer. */
+  whitelabel?: boolean
   /** Full-height hero (landing). Inner pages get the compact band. */
   tallHero?: boolean
   /** Already-escaped markup placed in <main>. For the landing page it starts
@@ -78,7 +97,7 @@ const ICON_SEARCH = '<svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" 
 
 // Runs in <head> so the saved theme is applied before first paint.
 const THEME_BOOT =
-  "try{var p=localStorage.getItem('fakereum-theme')||'auto',t=p;if(p==='auto')t=matchMedia('(prefers-color-scheme: dark)').matches?'dim':'light';var d=document.documentElement;d.dataset.theme=t;d.dataset.themePref=p}catch(e){document.documentElement.dataset.theme='light';document.documentElement.dataset.themePref='auto'}"
+  "try{var p=localStorage.getItem('theme')||'auto',t=p;if(p==='auto')t=matchMedia('(prefers-color-scheme: dark)').matches?'dim':'light';var d=document.documentElement;d.dataset.theme=t;d.dataset.themePref=p}catch(e){document.documentElement.dataset.theme='light';document.documentElement.dataset.themePref='auto'}"
 
 export function renderShell(o: ShellOpts): string {
   const b = o.baseURL ?? ''
@@ -104,7 +123,7 @@ export function renderShell(o: ShellOpts): string {
       <span class="stat">${ICON_HASH}Chain ID: <b>${esc(o.chainId)}</b></span>${o.symbol ? `\n      <span class="stat">${ICON_COIN}Currency: <b>${esc(o.symbol)}</b></span>` : ''}
     </div>
     <div class="tools">
-      <a class="icon-btn" href="${esc(b)}/admin" title="Admin" aria-label="Admin">${ICON_GEAR}</a>
+      ${o.whitelabel ? '' : `<a class="icon-btn" href="${esc(b)}/admin" title="Admin" aria-label="Admin">${ICON_GEAR}</a>`}
       <div class="theme-dd" id="themeDd">
         <button class="icon-btn" id="themeBtn" type="button" title="Theme" aria-label="Theme" aria-haspopup="true" aria-expanded="false">${ICON_DIM}</button>
         <div class="dropdown" id="themeMenu">
@@ -120,22 +139,22 @@ export function renderShell(o: ShellOpts): string {
 </div>
 <header class="header">
   <div class="container">
-    <a class="brand" href="${esc(b)}/"><span class="brand-mark"></span>Fakereum</a>
+    <a class="brand" href="${esc(b)}/"><span class="brand-mark"></span>${o.whitelabel ? esc(o.networkName) : 'Fakereum'}</a>
     <nav class="nav">
       <a href="${esc(b)}/"${cur('home')}>Home</a>
       <div class="dd"><a href="${esc(b)}/txs"${grp(['txs', 'accounts'])}>Blockchain${ICON_CHEV}</a>
         <div class="dropdown"><a href="${esc(b)}/txs">Transactions</a><a href="${esc(b)}/accounts">Accounts</a></div></div>
-      <div class="dd"><a href="${esc(b)}/import"${grp(['import', 'admin'])}>Tools${ICON_CHEV}</a>
+      ${o.whitelabel ? '' : `      <div class="dd"><a href="${esc(b)}/import"${grp(['import', 'admin'])}>Tools${ICON_CHEV}</a>
         <div class="dropdown"><a href="${esc(b)}/import">Import a balance</a><a href="${esc(b)}/admin">Admin</a></div></div>
       <div class="dd"><a href="${esc(b)}/#etherscan-api">API${ICON_CHEV}</a>
-        <div class="dropdown"><a href="${esc(b)}/#etherscan-api">Etherscan API</a><a href="${esc(b)}/#discovery">Discovery</a><a href="${esc(b)}/#signed">Signed messages</a></div></div>
+        <div class="dropdown"><a href="${esc(b)}/#etherscan-api">Etherscan API</a><a href="${esc(b)}/#discovery">Discovery</a><a href="${esc(b)}/#signed">Signed messages</a></div></div>`}
     </nav>
   </div>
 </header>
 <section class="hero${o.tallHero ? '' : ' compact'}">
   <div class="container">
     <h1>${esc(o.heading)}</h1>${o.sub ? `\n    <p class="sub">${esc(o.sub)}</p>` : ''}
-    <form class="search" id="q" onsubmit="return fakereumSearch(this)">
+    <form class="search" id="q" onsubmit="return runSearch(this)">
       <select name="kind" aria-label="Filter"><option value="all">All Filters</option><option value="address">Addresses</option><option value="tx">Txn Hash</option></select>
       <input name="q" placeholder="Search by Address / Txn Hash" autocomplete="off" spellcheck="false">
       <button class="btn btn-primary" type="submit" aria-label="Search">${ICON_SEARCH}</button>
@@ -145,9 +164,9 @@ export function renderShell(o: ShellOpts): string {
 <main class="container ${o.tallHero ? 'landing-main' : 'page-main'}">
 ${o.body}
 </main>
-<footer class="footer"><div class="container muted"><span>Fakereum sandbox explorer</span><span>Sandbox state is an overlay on the forked chain and does not exist on the real network.</span></div></footer>
+<footer class="footer"><div class="container muted">${o.whitelabel ? `<span>${esc(o.networkName)}</span>` : `<span>Fakereum sandbox explorer</span><span>Sandbox state is an overlay on the forked chain and does not exist on the real network.</span>`}</div></footer>
 <script>
-function fakereumSearch(f){var v=f.q.value.trim(),k=f.kind.value,ok=false;
+function runSearch(f){var v=f.q.value.trim(),k=f.kind.value,ok=false;
 if((k==='all'||k==='tx')&&/^0x[0-9a-fA-F]{64}$/.test(v)){ok=true;location.href=${bj}+'/tx/'+v}
 else if((k==='all'||k==='address')&&/^0x[0-9a-fA-F]{40}$/.test(v)){ok=true;location.href=${bj}+'/address/'+v}
 f.classList.toggle('bad',!ok);return false}
@@ -157,7 +176,7 @@ function apply(p){var t=p==='auto'?(mq.matches?'dim':'light'):p;d.dataset.theme=
 menu.querySelectorAll('button').forEach(function(b){b.classList.toggle('on',b.dataset.pref===p)})}
 var dd=document.getElementById('themeDd');function close(){dd.classList.remove('open');btn.setAttribute('aria-expanded','false')}
 btn.addEventListener('click',function(e){e.stopPropagation();var o=dd.classList.toggle('open');btn.setAttribute('aria-expanded',String(o))});
-menu.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var p=b.dataset.pref;try{localStorage.setItem('fakereum-theme',p)}catch(x){}apply(p);close()});
+menu.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var p=b.dataset.pref;try{localStorage.setItem('theme',p)}catch(x){}apply(p);close()});
 document.addEventListener('click',close);document.addEventListener('keydown',function(e){if(e.key==='Escape')close()});
 mq.addEventListener('change',function(){if(d.dataset.themePref==='auto')apply('auto')});
 apply(d.dataset.themePref||'auto');

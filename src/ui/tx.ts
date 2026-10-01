@@ -10,7 +10,7 @@
 // interpolated value.
 
 import type { Config, DecodedCall, DecodedLogEntry, DeployMethod, StoredTx, StoredLog, AccountDiff } from '../types'
-import { deployPill, esc, formatAbsUTC, humanizeAgo, renderShell } from './html'
+import { deployPill, esc, formatAbsUTC, humanizeAgo, identity, renderShell } from './html'
 import { addrKey, checksumAddress, toBigInt, strip0x } from '../lib/hex'
 import { resolveDeployMethod } from '../lib/deploy'
 import type { UpstreamExplorer } from '../lib/chains'
@@ -174,7 +174,7 @@ ${eventBlock}      <dl class="kv"><dt>Topics:</dt><dd><ol class="topics" start="
 
 function renderDiffRow(row: TxDiffRow): string {
   const pills =
-    (row.created ? '<span class="badge sandbox">created</span> ' : '') +
+    (row.created ? '<span class="badge local">created</span> ' : '') +
     (row.deployMethod ? deployPill(row.deployMethod) : '') +
     (row.selfDestructed ? ' <span class="badge err">self-destructed</span>' : '')
   const kv = (k: string, v: string) => `      <dl class="kv"><dt>${k}:</dt><dd>${v}</dd></dl>\n`
@@ -235,6 +235,8 @@ ${kv('Address', `<a class="mono" href="${esc(row.addressURL)}" rel="noopener nor
 
 export function renderTxPage(opts: RenderTxPageOpts): string {
   const { tx, cfg, decoded, decodedLogs, explorer, baseURL } = opts
+  const id = identity(cfg)
+  const wl = id.whitelabel
 
   const hash = tx.hash
   const statusOK = tx.status === 1
@@ -271,7 +273,7 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   const valueDec = toBigInt(tx.value).toString()
   const valueBlock = row('Value', `${esc(valueDec)} <span class="muted">wei</span>`)
 
-  const viaBlock = tx.signedMessage
+  const viaBlock = tx.signedMessage && !wl
     ? row('Submitted as', 'EIP-191 signed message <span class="muted">(personal_sign)</span>')
     : ''
   const gasUsed = toBigInt(tx.gasUsed)
@@ -284,7 +286,7 @@ export function renderTxPage(opts: RenderTxPageOpts): string {
   // A message tx also shows the text the wallet signed and its signature, so
   // anyone can re-verify the signer with personal_ecRecover.
   const rawSection =
-    (tx.signedMessage
+    (tx.signedMessage && !wl
       ? `<details open>
       <summary>Signed message (EIP-191)</summary>
       <pre>${esc(tx.signedMessage.message)}</pre>
@@ -366,10 +368,10 @@ ${row('Transaction hash', `<span class="mono">${esc(hash)}</span>`)}${row('Statu
         ${rawSection}
       </div>
     </div>
-    <form class="row" method="post" action="/undo/${esc(hash)}" onsubmit="return confirm('Undo this tx and every tx submitted after it?');">
+    ${wl ? '' : `<form class="row" method="post" action="/undo/${esc(hash)}" onsubmit="return confirm('Undo this tx and every tx submitted after it?');">
       <button type="submit" class="btn btn-undo">Undo back to this tx</button>
       <span class="muted">rewinds the overlay and removes this tx and every later sandbox tx</span>
-    </form>
+    </form>`}
   </section>
 
   <section class="panel-tab" id="logs">
@@ -385,12 +387,10 @@ ${diffSection}
   </section>`
 
   return renderShell({
-    title: `Sandbox tx ${hash.slice(0, 10)}…`,
+    title: wl ? `Transaction ${hash.slice(0, 10)}…` : `Sandbox tx ${hash.slice(0, 10)}…`,
     heading: 'Transaction Details',
     sub: hash,
-    symbol: cfg.symbol,
-    networkName: cfg.networkName,
-    chainId: cfg.chainId.toString(),
+    ...id,
     baseURL,
     body,
   })
