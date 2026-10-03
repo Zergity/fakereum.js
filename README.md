@@ -1165,7 +1165,7 @@ exactly the way the caller reached the sandbox.
 The same Worker script also deploys as a Bitcoin sandbox (`npm run deploy -- btc`,
 the `[env.btc]` block in `wrangler.toml`). It binds its own Durable Object class,
 `BtcSandbox`, and shares nothing with the EVM path except the Worker plumbing:
-CORS, the rate limiter and the deploy script. It has not been deployed yet.
+CORS, the rate limiter and the deploy script. It is live at `btc.derion.io`.
 
 Bitcoin has no accounts and no balances to override, so the model is different.
 State is a set of unspent outputs. The sandbox keeps its own timeline of
@@ -1221,6 +1221,21 @@ worked examples and the BIP341 wallet vectors.
 | `FAUCET_MAX_SATS` | 100 BTC | largest single mint |
 | `MIN_RELAY_FEE_SAT_KVB` | `1000` | minimum relay feerate, satoshis per 1000 vbytes |
 | `FEE_RATE_SAT_VB` | `2` | feerate the fee estimators report |
+| `ADMINS` | unset | BTC addresses whose BIP-322 signatures authorise admin actions; unset disables the admin tools |
+| `IMPERSONATE` | unset | `impersonator:impersonatee,…` address pairs |
+| `GENESIS` | unset | `{"alloc":{"<addr>":{"balance":"<sats>"}}}`, minted at the start and after a clear |
+| `BALANCE_MULTIPLIER` | `1` | real outputs count this many times over inside the sandbox |
+| `UI_MODE` | sandbox | `upstream` hides sandbox wording and controls |
+
+Real outputs are spent with a BIP-322 signed message
+(`fakereum_transactionMessage` / `fakereum_sendTransaction`) or by an
+impersonator, never with an ordinary signature, which would also be valid on the
+real chain. Admin actions (`fakereum_setImpersonator`, `fakereum_removeImpersonator`,
+`fakereum_setUiMode`, `fakereum_clearSandbox`) are BIP-322 signed by an `ADMINS`
+address; `fakereum_undoLastTx` / `fakereum_undoBackTo` are open, as on the EVM
+side. The explorer also serves `/txs`, `/accounts` and `/admin`. The EVM import
+page has no counterpart: there is no other chain whose balance would mean
+anything in bitcoin.
 
 `RATE_LIMIT_RPS`, `RATE_LIMIT_EXEMPT`, `CORS_ORIGINS` and `UPSTREAM_TIMEOUT_MS`
 behave as they do for the EVM chains. The faucet is open: the coins are fake and

@@ -1,7 +1,7 @@
 // Esplora- and bitcoind-shaped JSON for sandbox transactions and blocks.
 
 import { ESPLORA_SCRIPT_TYPE, classifyScript, scriptToAddress, type Network } from './address'
-import { bytesToHex, reversed, sha256d } from './bytes'
+import { bytesToHex, hexToBytes, reversed, sha256d } from './bytes'
 import type { BlockRec, Ledger, TxRecord } from './ledger'
 import { outpointKey, serializeTx, txid as txidOf, wtxid as wtxidOf } from './tx'
 
@@ -34,7 +34,7 @@ export function esploraTx(l: Ledger, rec: TxRecord, net: Network) {
     weight: rec.weight,
     fee: Number(stored.fee),
     vin: tx.inputs.map((i) => {
-      const prev = l.outputs.get(outpointKey(i.txid, i.vout))
+      const prev = l.prevout(outpointKey(i.txid, i.vout))
       return {
         txid: i.txid,
         vout: i.vout,
@@ -48,6 +48,13 @@ export function esploraTx(l: Ledger, rec: TxRecord, net: Network) {
     }),
     vout: tx.outputs.map((o) => outJson(o, net)),
     status: esploraStatus(l, stored.height, stored.time),
+    ...(stored.signedBy?.length
+      ? {
+          fakereum_signed_by: stored.signedBy
+            .map((sh) => scriptToAddress(hexToBytes(sh), net))
+            .filter((a): a is string => a !== null),
+        }
+      : {}),
   }
 }
 

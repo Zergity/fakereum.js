@@ -17,6 +17,9 @@ export class BtcSandbox {
       get: <T>(key: string) => ctx.storage.get<T>(key),
       put: (entries) => ctx.storage.put(entries),
       list: <T>(prefix: string) => ctx.storage.list<T>({ prefix }),
+      delete: async (keys) => {
+        await ctx.storage.delete(keys)
+      },
     }
     this.node = new BtcNode(storage, cfg, new EsploraUpstream(cfg.upstreamEsplora, cfg.upstreamTimeoutMs))
   }

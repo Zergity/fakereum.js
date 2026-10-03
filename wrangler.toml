@@ -304,6 +304,16 @@ class_name = "BtcSandbox"
 #   FEE_RATE_SAT_VB        feerate the fee estimators report (default 2).
 #   UPSTREAM_TIMEOUT_MS, RATE_LIMIT_RPS, RATE_LIMIT_EXEMPT, CORS_ORIGINS: as for
 #                          the EVM chains.
+#   ADMINS                 comma-separated BTC addresses (P2WPKH / P2SH-P2WPKH /
+#                          P2TR) whose BIP-322 signatures authorise admin actions.
+#                          Personal config: keep it in .prod.vars.btc, not here.
+#   IMPERSONATE            impersonator:impersonatee address pairs (initial set).
+#   GENESIS                {"alloc":{"<addr>":{"balance":"<satoshis>"}}}, minted at
+#                          the start of the timeline and again after a clear.
+#   BALANCE_MULTIPLIER     real outputs count this many times over in the sandbox
+#                          (default 1 = off; 1000 would exceed MAX_MONEY for rich
+#                          addresses, so enable with care).
+#   UI_MODE                "upstream" hides sandbox wording and controls.
 # Endpoint note: mempool.space and blockstream.info both serve the Esplora API
 # keyless; list both so a rate limit on one fails over to the other.
 [env.btc.vars]

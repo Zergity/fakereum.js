@@ -2,7 +2,8 @@
 // signer that spends sandbox outputs the way a wallet would.
 
 import { secp256k1 } from '@noble/curves/secp256k1.js'
-import { concat, hash160 } from '../src/btc/bytes'
+import { bip322Txs } from '../src/btc/bip322'
+import { concat, hash160, varbytes, varint } from '../src/btc/bytes'
 import { NETWORKS, scriptToAddress } from '../src/btc/address'
 import type { Ledger } from '../src/btc/ledger'
 import { SIGHASH_ALL, segwitV0Sighash } from '../src/btc/sighash'
@@ -48,3 +49,17 @@ export function spend(
 
 export const alice = key(1)
 export const bob = key(2)
+
+/** BIP-322 simple signature of `message` by a P2WPKH key (base64 of the witness stack). */
+export function signBip322(owner: ReturnType<typeof key>, message: string): string {
+  const { toSign } = bip322Txs(owner.script, message)
+  const code = concat(Uint8Array.of(0x76, 0xa9, 0x14), hash160(owner.pub), Uint8Array.of(0x88, 0xac))
+  const digest = segwitV0Sighash(toSign, 0, code, 0n, SIGHASH_ALL)
+  const sig = concat(secp256k1.sign(digest, owner.sk, { prehash: false, format: 'der' }), Uint8Array.of(SIGHASH_ALL))
+  return witnessB64([sig, owner.pub])
+}
+
+export function witnessB64(items: Uint8Array[]): string {
+  const bytes = concat(varint(items.length), ...items.map(varbytes))
+  return btoa(String.fromCharCode(...bytes))
+}

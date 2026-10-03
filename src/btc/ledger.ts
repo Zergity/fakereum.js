@@ -57,6 +57,18 @@ export interface StoredTx {
   /** Fee in satoshis, decimal string. */
   fee: string
   kind: 'tx' | 'faucet'
+  /** Real (upstream) outputs this tx consumed, so the ledger can show and total them after a reload. */
+  ext?: ExtOut[]
+  /** Script hexes whose real inputs were authorised by a signed message rather than by the tx itself. */
+  signedBy?: string[]
+}
+
+/** A real output, persisted next to the sandbox tx that spent it. `value` is in sandbox satoshis (decimal string). */
+export interface ExtOut {
+  txid: string
+  vout: number
+  value: string
+  script: string
 }
 
 export interface TxRecord {
@@ -80,6 +92,20 @@ export interface Plan {
   fee: bigint
   weight: number
   vsize: number
+  /** Real outputs the tx spends (empty for a sandbox-only spend). */
+  ext: OutRec[]
+  /** Script hexes of real inputs authorised by a signed message. */
+  signedBy: string[]
+}
+
+/** What a caller knows about a spend beyond the raw bytes. */
+export interface PlanContext {
+  /** Real prevouts by outpoint (value already in sandbox satoshis). */
+  external?: Map<string, OutRec>
+  /** Script hexes whose inputs a verified signed message authorises. */
+  authorized?: Set<string>
+  /** Scripts allowed to sign for `scriptHex` (account impersonation). */
+  impersonators?: (scriptHex: string) => Uint8Array[]
 }
 
 export interface LedgerOptions {
@@ -95,6 +121,8 @@ export class Ledger {
   blocks: BlockRec[] = []
   readonly txs = new Map<string, TxRecord>()
   readonly outputs = new Map<string, OutRec>()
+  /** Real outputs that sandbox transactions have spent. */
+  readonly external = new Map<string, OutRec>()
   /** outpoint -> txid of the sandbox transaction that spent it. */
   readonly spent = new Map<string, string>()
   private readonly byScript = new Map<string, string[]>()
@@ -118,6 +146,18 @@ export class Ledger {
   medianTimePast(): number {
     const times = [this.anchor.time, ...this.blocks.map((b) => b.time)].slice(-11).sort((a, b) => a - b)
     return times[Math.floor(times.length / 2)]!
+  }
+
+  /** An output by outpoint, whether the sandbox created it or the real chain did. */
+  prevout(key: string): OutRec | undefined {
+    return this.outputs.get(key) ?? this.external.get(key)
+  }
+
+  /** A fresh ledger over the same anchor holding only `blocks` and `txs`. */
+  rebuilt(blocks: BlockRec[], txs: StoredTx[]): Ledger {
+    const l = new Ledger(this.anchor, this.opts)
+    l.load(blocks, txs)
+    return l
   }
 
   blockAt(height: number): BlockRec | undefined {
@@ -156,6 +196,11 @@ export class Ledger {
     return [...(this.scriptTxs.get(scriptHex) ?? [])].reverse().map((id) => this.txs.get(id)!)
   }
 
+  /** Every script a sandbox transaction has paid to or spent from. */
+  touchedScripts(): string[] {
+    return [...this.scriptTxs.keys()]
+  }
+
   scriptForScripthash(h: string): string | undefined {
     return this.byScripthash.get(h)
   }
@@ -180,6 +225,12 @@ export class Ledger {
         ss += o.value
       }
     }
+    for (const [key, o] of this.external) {
+      if (this.spent.has(key) && bytesToHex(o.script) === scriptHex) {
+        sc++
+        ss += o.value
+      }
+    }
     return {
       funded_txo_count: fc,
       funded_txo_sum: Number(fs),
@@ -192,7 +243,7 @@ export class Ledger {
   // --- writes --------------------------------------------------------------
 
   /** Validate a raw transaction against the sandbox state without changing it. */
-  plan(raw: Uint8Array): Plan {
+  plan(raw: Uint8Array, ctx: PlanContext = {}): Plan {
     let tx: BtcTx
     try {
       tx = parseTx(raw)
@@ -219,28 +270,53 @@ export class Ledger {
 
     const seen = new Set<string>()
     const prevouts: TxOut[] = []
+    const real: boolean[] = []
+    const ext: OutRec[] = []
     let inTotal = 0n
     for (const inp of tx.inputs) {
       const key = outpointKey(inp.txid, inp.vout)
       if (seen.has(key)) throw new BtcError('bad-txns-inputs-duplicate')
       seen.add(key)
-      const prev = this.outputs.get(key)
+      const own = this.outputs.get(key)
+      const prev = own ?? ctx.external?.get(key)
       if (!prev) {
         throw new BtcError(
-          `bad-txns-inputs-missingorspent: ${key} is not an output of this sandbox ` +
-            '(spending real upstream outputs is not supported: the signed transaction would also be valid on the real chain)',
+          `bad-txns-inputs-missingorspent: ${key} is neither a sandbox output nor an unspent output of the real chain`,
         )
       }
       if (this.spent.has(key)) throw new BtcError('bad-txns-inputs-missingorspent: ' + key + ' is already spent')
       prevouts.push({ value: prev.value, script: prev.script })
+      real.push(!own)
+      if (!own) ext.push(prev)
       inTotal += prev.value
     }
     if (inTotal < outTotal) throw new BtcError('bad-txns-in-belowout')
 
     this.checkFinal(tx)
 
+    const signedBy = new Set<string>()
     for (let i = 0; i < tx.inputs.length; i++) {
-      const why = verifyInput(tx, i, prevouts)
+      const scriptHex = bytesToHex(prevouts[i]!.script)
+      if (ctx.authorized?.has(scriptHex)) {
+        if (real[i]) signedBy.add(scriptHex)
+        continue
+      }
+      // A real output's own signature would also be valid on the real chain, so
+      // it is never accepted; an impersonator's signature is not (it commits to
+      // a different script), and neither is a signed message.
+      let why: string | null = real[i]
+        ? 'spending a real output needs fakereum_sendTransaction (a signed message) or an impersonator: its own signature would also be valid on the real chain'
+        : verifyInput(tx, i, prevouts)
+      if (why) {
+        for (const imp of ctx.impersonators?.(scriptHex) ?? []) {
+          const sub = prevouts.slice()
+          sub[i] = { value: prevouts[i]!.value, script: imp }
+          if (verifyInput(tx, i, sub) === null) {
+            why = null
+            break
+          }
+        }
+      }
       if (why) throw new BtcError(`mandatory-script-verify-flag-failed (input ${i}: ${why})`)
     }
 
@@ -248,7 +324,7 @@ export class Ledger {
     if (fee * 1000n < BigInt(this.opts.minRelayFeePerKvB) * BigInt(vsize)) {
       throw new BtcError(`min relay fee not met, ${fee} < ${Math.ceil((this.opts.minRelayFeePerKvB * vsize) / 1000)}`, -26)
     }
-    return { tx, txid: id, hex: bytesToHex(serializeTx(tx)), fee, weight, vsize }
+    return { tx, txid: id, hex: bytesToHex(serializeTx(tx)), fee, weight, vsize, ext, signedBy: [...signedBy] }
   }
 
   /** Mine a validated transaction into a block of its own. */
@@ -262,6 +338,10 @@ export class Ledger {
       time: block.time,
       fee: plan.fee.toString(),
       kind: 'tx',
+      ...(plan.ext.length
+        ? { ext: plan.ext.map((o) => ({ txid: o.txid, vout: o.vout, value: o.value.toString(), script: bytesToHex(o.script) })) }
+        : {}),
+      ...(plan.signedBy.length ? { signedBy: plan.signedBy } : {}),
     }
     this.blocks.push(block)
     this.index({ stored, tx: plan.tx, weight: plan.weight, vsize: plan.vsize })
@@ -332,11 +412,14 @@ export class Ledger {
     if (stored.kind === 'faucet') this.faucetCount++
 
     const touched = new Set<string>()
+    for (const e of stored.ext ?? []) {
+      this.external.set(outpointKey(e.txid, e.vout), { txid: e.txid, vout: e.vout, value: BigInt(e.value), script: hexToBytes(e.script) })
+    }
     if (stored.kind === 'tx') {
       for (const inp of tx.inputs) {
         const key = outpointKey(inp.txid, inp.vout)
         this.spent.set(key, stored.txid)
-        const prev = this.outputs.get(key)
+        const prev = this.prevout(key)
         if (prev) touched.add(bytesToHex(prev.script))
       }
     }
